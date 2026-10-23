@@ -1,0 +1,12 @@
+/_build/
+/cover/
+/deps/
+/doc/
+/priv/plts/
+/.fetch
+erl_crash.dump
+*.beam
+/.elixir_ls/
+/.devenv*
+.devenv.flake.nix
+.devenv.json

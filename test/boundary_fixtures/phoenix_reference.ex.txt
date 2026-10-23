@@ -1,0 +1,13 @@
+# SPDX-FileCopyrightText: 2026 Luke Galea
+# SPDX-License-Identifier: MIT
+
+# A deliberate boundary violation, used only by
+# scripts/check-boundary-self-test.sh, which copies it into lib/ for one run of
+# the boundary check. The `.txt` extension keeps it out of every compile path.
+defmodule AshAgent.BoundaryFixture.PhoenixReference do
+  @moduledoc false
+
+  def broadcast(pubsub, topic, message) do
+    Phoenix.PubSub.broadcast(pubsub, topic, message)
+  end
+end

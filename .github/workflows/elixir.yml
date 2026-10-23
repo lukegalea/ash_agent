@@ -1,0 +1,164 @@
+# SPDX-FileCopyrightText: 2026 Luke Galea
+# SPDX-License-Identifier: MIT
+
+# The checks ash-project's shared `ash-ci.yml` runs, written out here instead of
+# called, plus this package's boundary check. Keep in step with upstream when
+# adopting new checks.
+
+name: Elixir CI
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  MIX_ENV: test
+
+jobs:
+  test:
+    name: mix test
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+          TZ: UTC
+          PGTZ: UTC
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: ./.github/actions/setup-elixir
+      # test_helper.exs creates the database and runs the test host's migrations
+      # itself, so there is no setup task here.
+      - run: mix test
+      - name: mix ash.codegen --check
+        run: mix ash.codegen --check
+
+  boundary:
+    name: boundary check and self-test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: ./.github/actions/setup-elixir
+      - run: scripts/check-boundary.sh
+      # The check must fail on a deliberate Phoenix reference; this proves it does.
+      - run: scripts/check-boundary-self-test.sh
+
+  compile-test:
+    name: MIX_ENV=test mix compile --warnings-as-errors
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: ./.github/actions/setup-elixir
+      - run: mix compile --force --warnings-as-errors
+
+  compile-dev:
+    name: MIX_ENV=dev mix compile --warnings-as-errors
+    runs-on: ubuntu-latest
+    env:
+      MIX_ENV: dev
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: ./.github/actions/setup-elixir
+        with:
+          mix-env: dev
+      - run: mix compile --force --warnings-as-errors
+
+  format:
+    name: mix format --check-formatted
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: ./.github/actions/setup-elixir
+      - run: mix format --check-formatted
+
+  credo:
+    name: mix credo --strict
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: ./.github/actions/setup-elixir
+      - run: mix credo --strict
+
+  dialyzer:
+    name: mix dialyzer
+    runs-on: ubuntu-latest
+    env:
+      MIX_ENV: dev
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: ./.github/actions/setup-elixir
+        with:
+          mix-env: dev
+      # The PLT changes with the dependency set and the toolchain. The key
+      # carries the resolved OTP and Elixir versions, so a toolchain roll is a
+      # cache miss, never a bad hit.
+      - name: Capture resolved toolchain versions for the PLT cache key
+        run: |
+          echo "PLT_KEY_OTP=$(erl -noshell -eval 'io:format("~s-~s", [erlang:system_info(otp_release), erlang:system_info(version)]), halt().')" >> "$GITHUB_ENV"
+          echo "PLT_KEY_ELIXIR=$(elixir --version | awk 'NR==2 {print $2}')" >> "$GITHUB_ENV"
+      - uses: actions/cache@v6.1.0
+        with:
+          path: priv/plts
+          key: ${{ runner.os }}-plt-${{ env.PLT_KEY_OTP }}-${{ env.PLT_KEY_ELIXIR }}-${{ hashFiles('mix.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-plt-${{ env.PLT_KEY_OTP }}-${{ env.PLT_KEY_ELIXIR }}-
+      - run: mix dialyzer --format short
+
+  docs:
+    name: mix docs
+    runs-on: ubuntu-latest
+    env:
+      MIX_ENV: dev
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: ./.github/actions/setup-elixir
+        with:
+          mix-env: dev
+      - run: mix docs
+
+  unused-deps:
+    name: mix deps.unlock --check-unused
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: ./.github/actions/setup-elixir
+      - run: mix deps.unlock --check-unused
+
+  audit:
+    name: mix deps.audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: ./.github/actions/setup-elixir
+      - run: mix deps.audit
+
+  # mix deps.audit reads its own advisory database; mix hex.audit checks the
+  # lock against Hex's retirements and advisories. Both gates run.
+  hex-audit:
+    name: mix hex.audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: ./.github/actions/setup-elixir
+      - run: mix hex.audit
+
+  reuse:
+    name: REUSE compliance
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: fsfe/reuse-action@v6
