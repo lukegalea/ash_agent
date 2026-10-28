@@ -17,5 +17,11 @@ defmodule AshAgent.Test.Domain do
       define :register_clinician, action: :create
       define :list_clinicians, action: :read
     end
+
+    resource AshAgent.Test.Spike.ReferralJob do
+      define :enqueue_referral, action: :enqueue, args: [:label]
+      define :claim_referral, action: :claim
+      define :complete_referral, action: :complete, args: [:epoch]
+    end
   end
 end
