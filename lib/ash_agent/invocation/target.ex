@@ -1,0 +1,324 @@
+# SPDX-FileCopyrightText: 2026 Luke Galea
+# SPDX-License-Identifier: MIT
+
+defmodule AshAgent.Invocation.Target do
+  @moduledoc """
+  The action an invocation runs: how its name resolves, how its arguments are checked
+  before it runs, and how it is run.
+
+  ## Naming
+
+  A target is written `"<resource module>.<action>"`, for example
+  `"MyClinic.Credentials.Credential.activate"`. It resolves only to a resource module that
+  is already loaded, to one of its actions, and only if that action has an effects
+  declaration (`AshAgent.Effects`): a target with no declaration cannot be governed,
+  because nothing says whether it needs approval or reaches outside the application.
+
+  ## Arguments
+
+  `args` is a map of the action's inputs, as JSON would carry them. For an update or a
+  destroy it also carries the subject's primary key (`"id"` for most resources), which
+  names the record and is not an input. `prepare/3` checks them without running the
+  action or any of its changes: every key is an input or the primary key, every value
+  casts to its input's type, every required argument is present, and the subject exists.
+  """
+
+  alias AshAgent.Effects.Effect
+
+  @typedoc "A resolved target."
+  @type t :: %{
+          resource: Ash.Resource.t(),
+          action: Ash.Resource.Actions.action(),
+          effect: Effect.t()
+        }
+
+  @doc "Resolves `name` to its resource, action and effects declaration."
+  @spec resolve(String.t()) :: {:ok, t()} | {:error, String.t()}
+  def resolve(name) when is_binary(name) do
+    with [module_name, action_name] <- split(name),
+         {:ok, resource} <- resource(module_name),
+         {:ok, action} <- action(resource, action_name),
+         {:ok, effect} <- effect(resource, action) do
+      {:ok, %{resource: resource, action: action, effect: effect}}
+    else
+      :error ->
+        {:error, "#{inspect(name)} is not a target: write it as \"Resource.Module.action\""}
+
+      {:error, message} ->
+        {:error, message}
+    end
+  end
+
+  def resolve(name), do: {:error, "#{inspect(name)} is not a target name"}
+
+  @doc "The target name of `action` on `resource`."
+  @spec name(Ash.Resource.t(), atom()) :: String.t()
+  def name(resource, action), do: "#{inspect(resource)}.#{action}"
+
+  @doc """
+  The target's digest: SHA-256 over the canonical JSON of its input schema, as ash_ai
+  renders it for a model, and its effects declaration. A change to either changes it.
+  """
+  @spec digest(t()) :: String.t()
+  def digest(%{resource: resource, action: action, effect: effect}) do
+    AshAgent.Digest.sha256_hex(%{
+      "input_schema" => AshAi.Tool.Schema.for_action(nil, resource, action),
+      "effects" => Effect.to_map(effect)
+    })
+  end
+
+  @doc """
+  Checks `args` against the target's inputs without running it.
+
+  Returns `{:ok, prepared}` with the cast inputs and, for an update or a destroy, the
+  subject record, or `{:error, messages}`. The subject is read without authorization,
+  so that a missing record and an unreadable one look alike to the caller; whether the
+  executing principal may act on it is decided when the target runs.
+  """
+  @spec prepare(t(), map(), keyword()) ::
+          {:ok, %{inputs: map(), subject: Ash.Resource.record() | nil}} | {:error, [String.t()]}
+  def prepare(%{resource: resource, action: action}, args, opts) when is_map(args) do
+    args = Map.new(args, fn {key, value} -> {to_string(key), value} end)
+    {pk, inputs} = Map.split(args, primary_key_names(resource, action))
+
+    with {:ok, cast} <- cast_inputs(resource, action, inputs),
+         {:ok, subject} <- subject(resource, action, pk, opts) do
+      {:ok, %{inputs: cast, subject: subject}}
+    end
+  end
+
+  def prepare(_target, _args, _opts), do: {:error, ["args must be a map"]}
+
+  @doc """
+  The preconditions captured with a request: the subject's `version_number`, when the
+  subject has one. An approval bound to them goes stale when the subject changes.
+  """
+  @spec preconditions(t(), Ash.Resource.record() | nil) :: [map()]
+  def preconditions(_target, nil), do: []
+
+  def preconditions(%{resource: resource}, subject) do
+    if Ash.Resource.Info.attribute(resource, :version_number) do
+      [
+        %{
+          "resource" => inspect(resource),
+          "id" => primary_key_string(resource, subject),
+          "version_number" => subject.version_number
+        }
+      ]
+    else
+      []
+    end
+  end
+
+  @doc """
+  Runs the target with `args` as `opts[:actor]`, authorized, and returns a JSON-ready
+  summary of what it returned. `opts` are passed to the action (`actor`, `tenant`,
+  `context`).
+  """
+  @spec run(t(), map(), keyword()) :: {:ok, map()} | {:error, term()}
+  def run(%{resource: resource, action: action}, args, opts) do
+    args = Map.new(args, fn {key, value} -> {to_string(key), value} end)
+    {pk, inputs} = Map.split(args, primary_key_names(resource, action))
+    opts = Keyword.put(opts, :authorize?, true)
+
+    resource
+    |> run_action(action, pk, inputs, opts)
+    |> case do
+      {:ok, value} -> {:ok, summarize(value)}
+      :ok -> {:ok, %{}}
+      {:error, error} -> {:error, error}
+    end
+  end
+
+  defp run_action(resource, %{type: :create, name: name}, _pk, inputs, opts) do
+    resource |> Ash.Changeset.for_create(name, inputs, opts) |> Ash.create()
+  end
+
+  defp run_action(resource, %{type: :update, name: name}, pk, inputs, opts) do
+    with {:ok, record} <- get(resource, pk, opts) do
+      record |> Ash.Changeset.for_update(name, inputs, opts) |> Ash.update()
+    end
+  end
+
+  defp run_action(resource, %{type: :destroy, name: name}, pk, inputs, opts) do
+    with {:ok, record} <- get(resource, pk, opts) do
+      record
+      |> Ash.Changeset.for_destroy(name, inputs, opts)
+      |> Ash.destroy(return_destroyed?: true)
+    end
+  end
+
+  defp run_action(resource, %{type: :action, name: name}, _pk, inputs, opts) do
+    resource |> Ash.ActionInput.for_action(name, inputs, opts) |> Ash.run_action()
+  end
+
+  defp run_action(resource, %{type: :read, name: name}, _pk, inputs, opts) do
+    resource |> Ash.Query.for_read(name, inputs, opts) |> Ash.read()
+  end
+
+  defp get(resource, pk, opts) do
+    resource
+    |> Ash.Query.do_filter(pk_filter(resource, pk))
+    |> Ash.read_one(Keyword.take(opts, [:actor, :tenant, :authorize?, :context]))
+    |> case do
+      {:ok, nil} -> {:error, Ash.Error.Query.NotFound.exception(resource: resource)}
+      other -> other
+    end
+  end
+
+  # What is recorded as the result: enough to find what the target touched, never the
+  # whole record, which may carry content the invocation was not asked to keep.
+  defp summarize(%{__struct__: resource} = record) do
+    if Ash.Resource.Info.resource?(resource),
+      do: %{"resource" => inspect(resource), "id" => primary_key_string(resource, record)},
+      else: %{"value" => inspect(record)}
+  end
+
+  defp summarize(records) when is_list(records),
+    do: %{"values" => Enum.map(records, &summarize/1)}
+
+  defp summarize(value) do
+    %{"value" => AshAgent.Digest.canonical(value)}
+  rescue
+    ArgumentError -> %{"value" => inspect(value)}
+  end
+
+  # --- resolving ---------------------------------------------------------------------
+
+  defp split(name) do
+    case String.split(name, ".") do
+      [_one] -> :error
+      parts -> [parts |> Enum.drop(-1) |> Enum.join("."), List.last(parts)]
+    end
+  end
+
+  # Law: never create an atom from a caller's string. A target names code that is
+  # already loaded, so its module and action atoms already exist.
+  defp resource(module_name) do
+    module = String.to_existing_atom("Elixir." <> module_name)
+
+    if Ash.Resource.Info.resource?(module),
+      do: {:ok, module},
+      else: {:error, "#{module_name} is not an Ash resource"}
+  rescue
+    ArgumentError -> {:error, "#{module_name} is not an Ash resource"}
+  end
+
+  defp action(resource, action_name) do
+    case Ash.Resource.Info.action(resource, String.to_existing_atom(action_name)) do
+      nil -> {:error, "#{inspect(resource)} has no action #{action_name}"}
+      action -> {:ok, action}
+    end
+  rescue
+    ArgumentError -> {:error, "#{inspect(resource)} has no action #{action_name}"}
+  end
+
+  defp effect(resource, action) do
+    case AshAgent.Effects.Info.effect(resource, action.name) do
+      nil ->
+        {:error,
+         "#{name(resource, action.name)} declares no effects, so it cannot be invoked; " <>
+           "declare it in the resource's `effects` section"}
+
+      effect ->
+        {:ok, effect}
+    end
+  end
+
+  # --- checking arguments ------------------------------------------------------------
+
+  defp primary_key_names(resource, %{type: type}) when type in [:update, :destroy],
+    do: resource |> Ash.Resource.Info.primary_key() |> Enum.map(&Atom.to_string/1)
+
+  defp primary_key_names(_resource, _action), do: []
+
+  defp cast_inputs(resource, action, inputs) do
+    fields = input_fields(resource, action)
+
+    {cast, errors} =
+      Enum.reduce(inputs, {%{}, []}, fn {key, value}, {cast, errors} ->
+        case Map.fetch(fields, key) do
+          {:ok, field} -> cast_one(field, value, cast, errors)
+          :error -> {cast, ["#{key} is not an input of #{action.name}" | errors]}
+        end
+      end)
+
+    missing =
+      for {key, field} <- fields, field.required?, not Map.has_key?(inputs, key) do
+        "#{key} is required"
+      end
+
+    case Enum.reverse(errors) ++ Enum.sort(missing) do
+      [] -> {:ok, cast}
+      messages -> {:error, messages}
+    end
+  end
+
+  defp cast_one(field, value, cast, errors) do
+    with {:ok, value} <- Ash.Type.cast_input(field.type, value, field.constraints),
+         {:ok, value} <- Ash.Type.apply_constraints(field.type, value, field.constraints) do
+      {Map.put(cast, field.name, value), errors}
+    else
+      _ -> {cast, ["#{field.name} is not a valid #{inspect(field.type)}" | errors]}
+    end
+  end
+
+  # The action's arguments, plus the attributes it accepts. On a create, an accepted
+  # attribute that cannot be nil and has no default is required; on other actions an
+  # accepted attribute is optional.
+  defp input_fields(resource, action) do
+    arguments =
+      for argument <- action.arguments, argument.public? do
+        {Atom.to_string(argument.name),
+         %{
+           name: Atom.to_string(argument.name),
+           type: argument.type,
+           constraints: argument.constraints,
+           required?: not argument.allow_nil? and is_nil(argument.default)
+         }}
+      end
+
+    accepted =
+      for name <- Map.get(action, :accept, []),
+          attribute = Ash.Resource.Info.attribute(resource, name) do
+        {Atom.to_string(name),
+         %{
+           name: Atom.to_string(name),
+           type: attribute.type,
+           constraints: attribute.constraints,
+           required?:
+             action.type == :create and not attribute.allow_nil? and is_nil(attribute.default) and
+               not attribute.generated? and name not in Map.get(action, :allow_nil_input, [])
+         }}
+      end
+
+    Map.new(accepted ++ arguments)
+  end
+
+  defp subject(resource, %{type: type}, pk, opts) when type in [:update, :destroy] do
+    names = Ash.Resource.Info.primary_key(resource)
+
+    if Enum.all?(names, &Map.has_key?(pk, Atom.to_string(&1))) do
+      case get(resource, pk, tenant: opts[:tenant], authorize?: false) do
+        {:ok, record} -> {:ok, record}
+        {:error, _} -> {:error, ["the record to act on does not exist"]}
+      end
+    else
+      {:error, ["#{Enum.join(names, ", ")} must name the record to act on"]}
+    end
+  end
+
+  defp subject(_resource, _action, _pk, _opts), do: {:ok, nil}
+
+  defp pk_filter(resource, pk) do
+    for name <- Ash.Resource.Info.primary_key(resource) do
+      {name, Map.get(pk, Atom.to_string(name))}
+    end
+  end
+
+  defp primary_key_string(resource, record) do
+    resource
+    |> Ash.Resource.Info.primary_key()
+    |> Enum.map_join(",", &to_string(Map.get(record, &1)))
+  end
+end

@@ -29,8 +29,10 @@ defmodule AshAgent do
 
   ## Status
 
-  The effects declaration is built: `AshAgent.Effects` on resources and
-  `AshAgent.Effects.Domain` on domains. No fragment or behaviour is built yet;
-  `usage-rules.md` lists what is planned and marks each part as not yet built.
+  Built: the effects declaration (`AshAgent.Effects` on resources and
+  `AshAgent.Effects.Domain` on domains), and the invocation fragment
+  (`AshAgent.Invocation`) with the behaviours it calls,
+  `AshAgent.ExecutionIdentity` and `AshAgent.DigestKey`. The durable agent run
+  fragments are not built yet; `usage-rules.md` says which parts have landed.
   """
 end
