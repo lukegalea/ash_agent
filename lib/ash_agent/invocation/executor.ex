@@ -6,11 +6,14 @@ defmodule AshAgent.Invocation.Executor do
   Runs a ready invocation: claim, commit, run, record under the fence.
 
     1. **Claim** (`claim/3`, its own transaction): takes the next lease epoch. Of two
-       workers holding the same row, one claims and the other ends with `:skipped`.
+       workers holding the same row, one claims and the other ends with `:skipped`. A
+       row whose target is declared differently now from when it was requested becomes
+       `stale` at the claim, and ends with `:stale`; its target never runs.
     2. **Identity** (`c:AshAgent.ExecutionIdentity.actor_for/1`): the actor to run as is
        built afresh from the row's principal. A principal with no authority now fails the
        row as `:denied`; the target does not run.
-    3. **Run and record** (`run_claimed/2`):
+    3. **Run and record** (`run_claimed/2`), on the path the target's current
+       declaration names, which the claim checked is the one requested:
        * a target that writes only to this application (`open_world: false`) runs in one
          transaction with `succeed`. `succeed` is filtered on the claimed epoch, so a
          worker whose lease was taken over in the meantime matches no row, and its
@@ -24,7 +27,8 @@ defmodule AshAgent.Invocation.Executor do
        `:permanent` otherwise.
 
   Every function returns `{:ok, outcome}` with `outcome` one of `:succeeded`, `:failed`,
-  `:skipped` (not claimable) and `:superseded` (the lease was lost before completing).
+  `:skipped` (not claimable), `:superseded` (the lease was lost before completing) and
+  `:stale` (the target changed since the request).
   `opts` carry the actor and tenant the invocation row is read and written with: the
   machinery's, not the target's.
   """
@@ -33,7 +37,7 @@ defmodule AshAgent.Invocation.Executor do
 
   alias AshAgent.Invocation.{Changes.Claim, Info, LeaseLost, Target}
 
-  @type outcome :: :succeeded | :failed | :skipped | :superseded
+  @type outcome :: :succeeded | :failed | :skipped | :superseded | :stale
 
   @doc "Claims the row with id `id` and runs it. The `:execute` action's whole job."
   @spec execute(Ash.Resource.t(), Ash.UUID.t(), keyword()) :: {:ok, outcome()} | {:error, term()}
@@ -46,6 +50,7 @@ defmodule AshAgent.Invocation.Executor do
         case claim(row, opts) do
           {:ok, claimed} -> run_claimed(claimed, opts)
           {:error, :not_claimable} -> {:ok, :skipped}
+          {:error, :stale} -> {:ok, :stale}
           {:error, error} -> {:error, error}
         end
 
@@ -58,16 +63,21 @@ defmodule AshAgent.Invocation.Executor do
   Claims `row`. `claim_opts` may set `:lease_for` in milliseconds.
 
   `{:error, :not_claimable}` when the row is not ready and holds no expired lease, or
-  when another claim took it first.
+  when another claim took it first. `{:error, :stale}` when its target is declared
+  differently now from when it was requested: the claim has made the row `stale`, and it
+  must not run.
   """
   @spec claim(Ash.Resource.record(), keyword(), keyword()) ::
-          {:ok, Ash.Resource.record()} | {:error, :not_claimable | term()}
+          {:ok, Ash.Resource.record()} | {:error, :not_claimable | :stale | term()}
   def claim(row, opts, claim_opts \\ []) do
     if Claim.claimable?(row, DateTime.utc_now()) do
       row
       |> Ash.Changeset.for_update(:claim, Map.new(Keyword.take(claim_opts, [:lease_for])), opts)
       |> Ash.update()
       |> case do
+        {:ok, %{status: :stale}} ->
+          {:error, :stale}
+
         {:ok, claimed} ->
           {:ok, claimed}
 
@@ -111,7 +121,7 @@ defmodule AshAgent.Invocation.Executor do
       }
     ]
 
-    if open_world?(claimed) do
+    if target.effect.open_world? do
       case Target.run(target, args, target_opts) do
         {:ok, summary} -> complete(claimed, :succeed, %{result: summary}, opts)
         {:error, error} -> record_failure(claimed, failure_class(error), error_code(error), opts)
@@ -198,11 +208,6 @@ defmodule AshAgent.Invocation.Executor do
       do: claimed.args || %{},
       else: Ash.load!(claimed, [:args], opts).args || %{}
   end
-
-  # Undeclared or unknown counts as open-world: MCP's default, and the safe reading.
-  defp open_world?(%{effects: %{"open_world" => false}}), do: false
-  defp open_world?(%{effects: %{open_world: false}}), do: false
-  defp open_world?(_claimed), do: true
 
   defp failure_class(%Ash.Error.Forbidden{}), do: :denied
   defp failure_class(%Ash.Error.Invalid{}), do: :rejected

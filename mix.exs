@@ -72,6 +72,8 @@ defmodule AshAgent.MixProject do
       {:jcs, "~> 0.2"},
       # The test host's data layer. A consuming application brings its own.
       {:ash_postgres, "~> 2.14", only: [:dev, :test]},
+      # The SAT solver Ash's policy authorizer needs, for the test host's policies.
+      {:simple_sat, "~> 0.1", only: :test},
       # Spark.Formatter, the formatter plugin, needs it.
       {:sourceror, "~> 1.7", only: [:dev, :test]},
       {:ex_doc, "~> 0.34", only: :dev, runtime: false},

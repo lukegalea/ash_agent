@@ -14,8 +14,8 @@ defmodule AshAgent.Invocation.Changes.Request do
     3. the host names the principal the work executes as
        (`c:AshAgent.ExecutionIdentity.principal_for/2`);
     4. the arguments are checked against the target without running it, and the row is
-       routed: `rejected` if they do not fit, `awaiting_approval` if the declaration
-       asks for an approval, `ready` otherwise. The subject's `version_number` is kept
+       routed: `rejected` if they do not fit or name a record the caller cannot read,
+       `awaiting_approval` if the declaration asks for an approval, `ready` otherwise. The subject's `version_number` is kept
        as a precondition. The resolved target and the subject (the record an update or
        destroy acts on, else nil) are put in the changeset context under `:ash_agent`,
        for the host's own changes on `request`, which run after this one;
@@ -52,7 +52,7 @@ defmodule AshAgent.Invocation.Changes.Request do
           approval_mode: target.effect.approval
         })
       )
-      |> route(target, args)
+      |> route(target, args, context)
       |> Ash.Changeset.before_action(&digest_args(&1, args))
       |> Ash.Changeset.after_action(&Enqueue.when_ready/2)
     else
@@ -92,8 +92,8 @@ defmodule AshAgent.Invocation.Changes.Request do
     end
   end
 
-  defp route(changeset, target, args) do
-    case Target.prepare(target, args, tenant: changeset.tenant) do
+  defp route(changeset, target, args, context) do
+    case Target.prepare(target, args, Ash.Context.to_opts(context, tenant: changeset.tenant)) do
       {:ok, %{subject: subject}} ->
         changeset
         |> Ash.Changeset.force_change_attribute(
