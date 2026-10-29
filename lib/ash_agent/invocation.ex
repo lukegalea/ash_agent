@@ -42,9 +42,15 @@ defmodule AshAgent.Invocation do
   `requested → awaiting_approval → ready → executing → (dispatched) → succeeded | failed |
   outcome_unknown`, plus `rejected`, `stale` and `cancelled`. `request` creates a row
   directly in `awaiting_approval`, `ready` or `rejected`. `succeeded`, `failed`,
-  `rejected`, `stale` and `cancelled` are terminal: no action changes a row in one of
-  them. `dispatched` and `outcome_unknown` belong to external work and are reached by
-  actions a later version adds.
+  `rejected`, `stale` and `cancelled` are final: no action changes their outcome. Two
+  exceptions, both named: `retry` makes a row that `failed` with `:transient` ready
+  again, and `complete_external` adds what a late callback said to a final row's
+  `evidence` without changing anything else. `outcome_unknown` leaves only through
+  reconciliation: a `reconcile_with` lookup, a callback, or a person's resolution.
+
+  Which path a claimed row takes, and what each failure class does, is in
+  `AshAgent.Invocation.Executor`, `AshAgent.Invocation.Reconciler` and
+  `AshAgent.Invocation.Failure`.
 
   ## Actions
 
@@ -76,6 +82,25 @@ defmodule AshAgent.Invocation do
     * `execute` (generic, no transaction): the `:execute` trigger's action. Claims, builds
       the executing actor afresh, runs the target and completes under the fence; see
       `AshAgent.Invocation.Executor`.
+    * `defer`, `dispatch` and `mark_outcome_unknown` (updates, filtered on the claimed
+      epoch): the other ways a claimed row ends an attempt. `defer` makes it `ready`
+      again after a backoff (a transient failure); `dispatch` records that the work was
+      handed on and waits, with no lease, until `deadline_at`; `mark_outcome_unknown`
+      records that the effect may have happened and its acknowledgement was lost.
+    * `reconcile` (generic, no transaction): the `:reconcile` trigger's action. Settles a
+      row whose lease expired, whose dispatch deadline passed or whose outcome is
+      unknown; see `AshAgent.Invocation.Reconciler`.
+    * `requeue` (update): makes an `executing` row whose lease expired `ready` again,
+      only when running its target again cannot repeat its effect.
+    * `complete_external` (update): records the outcome of a `dispatched` or
+      `outcome_unknown` row from outside: a callback, or a `reconcile_with` lookup. On
+      a final row it records the callback in `evidence` and changes nothing else.
+    * `request_resolution` and `apply_resolution` (updates): ask a person to settle an
+      `outcome_unknown` row, and apply what they decided: `:succeeded`, `:failed` or
+      `:retry`. As with `apply_decision`, the outcome arrives as an argument, set by a
+      change the host attaches.
+    * `retry` (update): makes a row that `failed` with `:transient` `ready` again, with
+      the same key and arguments.
 
   Fencing uses a filter on the update and `optimistic_lock`, never an atomic update, so
   it works on hosts whose audit wrapper refuses atomics.
@@ -100,7 +125,6 @@ defmodule AshAgent.Invocation do
     state_attribute :status
     initial_states [:requested, :awaiting_approval, :ready, :rejected]
     default_initial_state :requested
-    # Reached by the external-work actions of a later version.
     extra_states [:dispatched, :outcome_unknown]
 
     transitions do
@@ -108,6 +132,17 @@ defmodule AshAgent.Invocation do
       transition :claim, from: [:ready, :executing], to: [:executing, :stale]
       transition :succeed, from: :executing, to: :succeeded
       transition :fail, from: :executing, to: :failed
+      transition :defer, from: :executing, to: :ready
+      transition :dispatch, from: :executing, to: :dispatched
+      transition :mark_outcome_unknown, from: [:executing, :dispatched], to: :outcome_unknown
+      transition :requeue, from: :executing, to: :ready
+
+      transition :complete_external,
+        from: [:dispatched, :outcome_unknown],
+        to: [:succeeded, :failed]
+
+      transition :apply_resolution, from: :outcome_unknown, to: [:succeeded, :failed, :ready]
+      transition :retry, from: :failed, to: :ready
 
       transition :request_cancel,
         from: [:requested, :awaiting_approval, :ready],
@@ -178,6 +213,8 @@ defmodule AshAgent.Invocation do
       change filter(expr(status == :executing and lease_epoch == ^arg(:epoch)))
       change transition_state(:succeeded)
       change set_attribute(:lease_expires_at, nil)
+      change set_attribute(:failure_class, nil)
+      change set_attribute(:error_code, nil)
     end
 
     update :fail do
@@ -191,6 +228,156 @@ defmodule AshAgent.Invocation do
       change filter(expr(status == :executing and lease_epoch == ^arg(:epoch)))
       change transition_state(:failed)
       change set_attribute(:lease_expires_at, nil)
+    end
+
+    update :defer do
+      description """
+      Make a claimed row whose attempt failed transiently ready again at `retry_at`.
+      Refused unless `epoch` still holds the lease.
+      """
+
+      accept [:error_code]
+      require_atomic? false
+
+      argument :epoch, :integer, allow_nil?: false
+      argument :retry_at, :utc_datetime_usec, allow_nil?: false
+
+      change filter(expr(status == :executing and lease_epoch == ^arg(:epoch)))
+      change transition_state(:ready)
+      change set_attribute(:lease_expires_at, nil)
+      change set_attribute(:next_attempt_at, arg(:retry_at))
+      change set_attribute(:failure_class, :transient)
+    end
+
+    update :dispatch do
+      description """
+      Record that the claimed work was handed on and its outcome comes later, by
+      `deadline_at`. Refused unless `epoch` still holds the lease.
+      """
+
+      accept []
+      require_atomic? false
+
+      argument :epoch, :integer, allow_nil?: false
+      argument :effect_ref, :string, allow_nil?: false, constraints: [max_length: 512]
+      argument :effect_system, :string, constraints: [max_length: 256]
+      argument :deadline_at, :utc_datetime_usec, allow_nil?: false
+
+      change filter(expr(status == :executing and lease_epoch == ^arg(:epoch)))
+      change transition_state(:dispatched)
+      change set_attribute(:lease_expires_at, nil)
+      change set_attribute(:effect_ref, arg(:effect_ref))
+      change set_attribute(:effect_system, arg(:effect_system))
+      change set_attribute(:deadline_at, arg(:deadline_at))
+    end
+
+    update :mark_outcome_unknown do
+      description """
+      Record that the effect may have happened and its acknowledgement was lost. Refused
+      unless `epoch` is the row's epoch.
+      """
+
+      accept [:error_code, :failure_class]
+      require_atomic? false
+
+      argument :epoch, :integer, allow_nil?: false
+
+      change filter(expr(status in [:executing, :dispatched] and lease_epoch == ^arg(:epoch)))
+
+      change transition_state(:outcome_unknown)
+      change set_attribute(:lease_expires_at, nil)
+      change AshAgent.Invocation.Changes.EnqueueReconcile
+    end
+
+    update :requeue do
+      description """
+      Make an executing row whose lease expired ready again, when running its target
+      again cannot repeat its effect.
+      """
+
+      accept []
+      require_atomic? false
+
+      argument :epoch, :integer, allow_nil?: false
+
+      change filter(expr(status == :executing and lease_epoch == ^arg(:epoch)))
+      change AshAgent.Invocation.Changes.Requeue
+    end
+
+    update :complete_external do
+      description """
+      Record the outcome of work done outside: a callback, or a `reconcile_with` lookup.
+      A callback for a row that is already final is kept as evidence and changes nothing
+      else.
+      """
+
+      accept []
+      require_atomic? false
+
+      argument :outcome, :atom, allow_nil?: false, constraints: [one_of: [:succeeded, :failed]]
+
+      argument :via, :string do
+        description "How the outcome was learned: callback, reconcile_with or deadline."
+        allow_nil? false
+        constraints max_length: 64
+      end
+
+      argument :effect_ref, :string, constraints: [max_length: 512]
+      argument :effect_system, :string, constraints: [max_length: 256]
+
+      argument :failure_class, :atom do
+        description "The class a failed outcome is recorded with. Default `:permanent`."
+        constraints one_of: @failure_classes
+      end
+
+      argument :error_code, :string, constraints: [max_length: 256]
+
+      change AshAgent.Invocation.Changes.CompleteExternal
+    end
+
+    update :request_resolution do
+      description "Ask a person to settle a row whose outcome is unknown."
+      accept []
+      require_atomic? false
+
+      change filter(expr(status == :outcome_unknown and is_nil(resolution_requested_at)))
+      change set_attribute(:resolution_requested_at, &DateTime.utc_now/0)
+    end
+
+    update :apply_resolution do
+      description "Apply a person's resolution to a row whose outcome was unknown."
+      accept []
+      require_atomic? false
+
+      argument :outcome, :atom do
+        description """
+        `:succeeded` (the effect happened), `:failed` (it did not, and should not be
+        tried again) or `:retry` (it did not; run it again). Supplied by the caller, or
+        set by a change the host attaches to this action. With no outcome the update is
+        refused.
+        """
+
+        constraints one_of: [:succeeded, :failed, :retry]
+      end
+
+      argument :decided_by_id, :uuid
+
+      change filter(expr(status == :outcome_unknown and not is_nil(resolution_requested_at)))
+
+      change AshAgent.Invocation.Changes.ApplyResolution
+    end
+
+    update :retry do
+      description "Make a row that failed transiently ready again, with the same key and arguments."
+      accept []
+      require_atomic? false
+
+      change filter(expr(status == :failed and failure_class == :transient))
+      change transition_state(:ready)
+      change set_attribute(:next_attempt_at, nil)
+      change set_attribute(:failure_class, nil)
+      change set_attribute(:error_code, nil)
+      change AshAgent.Invocation.Changes.EnqueueExecute
     end
 
     update :apply_decision do
@@ -223,12 +410,28 @@ defmodule AshAgent.Invocation do
 
     action :execute, :atom do
       description "Claim a ready row, run its target as its principal, and record the outcome."
-      constraints one_of: [:succeeded, :failed, :skipped, :superseded, :stale]
+
+      constraints one_of: AshAgent.Invocation.Executor.outcomes()
+
       transaction? false
 
       argument :primary_key, :map, allow_nil?: false
 
       run AshAgent.Invocation.Actions.Execute
+    end
+
+    action :reconcile, :atom do
+      description """
+      Settle a row whose lease expired, whose dispatch deadline passed, or whose outcome
+      is unknown.
+      """
+
+      constraints one_of: AshAgent.Invocation.Reconciler.outcomes()
+      transaction? false
+
+      argument :primary_key, :map, allow_nil?: false
+
+      run AshAgent.Invocation.Actions.Reconcile
     end
   end
 
@@ -411,7 +614,35 @@ defmodule AshAgent.Invocation do
     attribute :effect_system, :string, public?: true
     attribute :effect_ref, :string, public?: true
     attribute :effect_observed_at, :utc_datetime_usec, public?: true
-    attribute :reconciled_via, :string, public?: true
+
+    attribute :reconciled_via, :string do
+      public? true
+
+      description "How an outside outcome was learned: callback, reconcile_with, deadline or operator."
+    end
+
+    # --- resolution ---
+
+    attribute :resolution_requested_at, :utc_datetime_usec do
+      public? true
+      description "When a person was asked to settle this row's unknown outcome."
+    end
+
+    attribute :resolved_by_id, :uuid do
+      public? true
+      description "The person who settled this row's unknown outcome."
+    end
+
+    attribute :evidence, {:array, :map} do
+      allow_nil? false
+      public? true
+      default []
+
+      description """
+      What was learned about the outside effect after the outcome was recorded, such as
+      a late callback. Never changes the outcome.
+      """
+    end
   end
 
   identities do

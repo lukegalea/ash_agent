@@ -13,10 +13,15 @@ defmodule AshAgent.Invocation.Info do
   @spec digest_key(Ash.Resource.t() | Spark.Dsl.t()) :: module() | nil
   def digest_key(resource), do: Spark.Dsl.Extension.get_opt(resource, [:invocation], :digest_key)
 
-  @doc "Whether `resource` declares the ash_oban trigger named `:execute`."
-  @spec execute_trigger?(Ash.Resource.t()) :: boolean()
-  def execute_trigger?(resource) do
+  @doc "How many claims a row gets before a transient failure is final."
+  @spec max_attempts(Ash.Resource.t() | Spark.Dsl.t()) :: pos_integer()
+  def max_attempts(resource),
+    do: Spark.Dsl.Extension.get_opt(resource, [:invocation], :max_attempts, 3)
+
+  @doc "Whether `resource` declares the ash_oban trigger named `name`."
+  @spec trigger?(Ash.Resource.t(), atom()) :: boolean()
+  def trigger?(resource, name) do
     AshOban in Spark.extensions(resource) and
-      Enum.any?(AshOban.Info.oban_triggers(resource), &(&1.name == :execute))
+      Enum.any?(AshOban.Info.oban_triggers(resource), &(&1.name == name))
   end
 end

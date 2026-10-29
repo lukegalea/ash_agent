@@ -18,7 +18,9 @@ package's side, the effects declaration and the invocation fragment with its two
 | Approvals | A behaviour for opening an approval and reading its decision, and the state that waits for it | An implementation over the host's approval mechanism |
 | Tenancy | None. Actions never read a tenant themselves | A `multitenancy` block, usually through its base resource |
 | Policies | None | All of them |
-| Triggers and workers | The trigger names the actions expect, and a template in `usage-rules.md` | The `oban` blocks: worker and scheduler modules, queues, schedules, the default actor |
+| Triggers and workers | The trigger names the actions expect (`:execute`, `:reconcile`), and a template in `usage-rules.md` | The `oban` blocks: worker and scheduler modules, queues, schedules, the default actor |
+| Failure | Typed failure classes, `AshAgent.BusinessError`, and the `AshAgent.FailureClass` protocol | An implementation of the protocol for its own error types |
+| Unknown outcomes | Reconciliation by the target's `reconcile_with` lookup, by callback, and the states that wait for a person | The task a person settles an unknown outcome with, and the change that reads it |
 | Audit | Nothing | Whatever audit trail it keeps |
 | Effects | The `effects` declaration (`AshAgent.Effects`), its verifiers, and a domain check that exposed tools are declared | A declaration on each action it exposes or governs |
 

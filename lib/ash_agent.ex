@@ -32,7 +32,10 @@ defmodule AshAgent do
   Built: the effects declaration (`AshAgent.Effects` on resources and
   `AshAgent.Effects.Domain` on domains), and the invocation fragment
   (`AshAgent.Invocation`) with the behaviours it calls,
-  `AshAgent.ExecutionIdentity` and `AshAgent.DigestKey`. The durable agent run
+  `AshAgent.ExecutionIdentity` and `AshAgent.DigestKey`, its execution paths
+  (`AshAgent.Invocation.Executor`), typed failure (`AshAgent.Invocation.Failure`,
+  `AshAgent.BusinessError`, the `AshAgent.FailureClass` protocol) and
+  reconciliation (`AshAgent.Invocation.Reconciler`). The durable agent run
   fragments are not built yet; `usage-rules.md` says which parts have landed.
   """
 end

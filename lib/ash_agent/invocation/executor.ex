@@ -16,29 +16,61 @@ defmodule AshAgent.Invocation.Executor do
     3. **Run and record** (`run_claimed/2`), on the path the target's current
        declaration names, which the claim checked is the one requested:
        * a target that writes only to this application (`open_world: false`) runs in one
-         transaction with `succeed`. `succeed` is filtered on the claimed epoch, so a
-         worker whose lease was taken over in the meantime matches no row, and its
-         transaction rolls back with the target's effect in it: exactly one committed
-         effect, whichever worker wins;
-       * a target that reaches outside runs with no transaction open, and `succeed` is
-         recorded under the fence afterwards. Its effect is at least once; reconciling a
-         lost acknowledgement is not built in this version.
-    4. A target that fails is recorded with `fail` under the same fence and a failure
-       class: `:denied` for a forbidden error, `:rejected` for an invalid one,
-       `:permanent` otherwise.
+         transaction with its completion. The completion is filtered on the claimed
+         epoch, so a worker whose lease was taken over in the meantime matches no row,
+         and its transaction rolls back with the target's effect in it: exactly one
+         committed effect, whichever worker wins. An expired lease means the effect did
+         not happen, so the row is made ready again;
+       * a target that reaches outside runs with no transaction open, and its outcome is
+         recorded under the fence afterwards. An idempotent one is given the invocation
+         key (`context.ash_agent.invocation_key`) to send as the outside service's
+         idempotency key, so a second call after an expired lease is deduplicated there.
+         One that is not idempotent is never called twice for one claim: an error that
+         leaves its effect in doubt, or a lease that expires with no outcome recorded,
+         makes the row `outcome_unknown` for reconciliation (`AshAgent.Invocation.Reconciler`);
+       * a target that hands its work on returns an `AshAgent.Invocation.Dispatch`: the
+         row becomes `dispatched` and waits, with no lease, until its deadline.
+    4. A target that fails is classified (`AshAgent.Invocation.Failure`): a transient
+       failure makes the row `ready` again after a backoff (`defer`) until the host's
+       `max_attempts`; one whose effect is in doubt on an outside target that is not
+       idempotent makes it `outcome_unknown`; anything else fails it with its class.
 
-  Every function returns `{:ok, outcome}` with `outcome` one of `:succeeded`, `:failed`,
-  `:skipped` (not claimable), `:superseded` (the lease was lost before completing) and
-  `:stale` (the target changed since the request).
+  Every function returns `{:ok, outcome}` with `outcome` one of `outcomes/0`: `:succeeded`,
+  `:failed`, `:deferred` (ready again after a backoff), `:dispatched`,
+  `:outcome_unknown`, `:skipped` (not claimable), `:superseded` (the lease was lost
+  before completing) and `:stale` (the target changed since the request).
   `opts` carry the actor and tenant the invocation row is read and written with: the
   machinery's, not the target's.
   """
 
   require Ash.Query
 
-  alias AshAgent.Invocation.{Changes.Claim, Info, LeaseLost, Target}
+  alias AshAgent.Invocation.{Changes.Claim, Dispatch, Failure, Info, LeaseLost, Target}
 
-  @type outcome :: :succeeded | :failed | :skipped | :superseded | :stale
+  @outcomes [
+    :succeeded,
+    :failed,
+    :deferred,
+    :dispatched,
+    :outcome_unknown,
+    :skipped,
+    :superseded,
+    :stale
+  ]
+
+  @type outcome ::
+          :succeeded
+          | :failed
+          | :deferred
+          | :dispatched
+          | :outcome_unknown
+          | :skipped
+          | :superseded
+          | :stale
+
+  @doc "Every outcome `execute/3` can return."
+  @spec outcomes() :: [outcome()]
+  def outcomes, do: @outcomes
 
   @doc "Claims the row with id `id` and runs it. The `:execute` action's whole job."
   @spec execute(Ash.Resource.t(), Ash.UUID.t(), keyword()) :: {:ok, outcome()} | {:error, term()}
@@ -99,75 +131,111 @@ defmodule AshAgent.Invocation.Executor do
       {:ok, target} ->
         case Info.execution_identity(resource).actor_for(claimed) do
           {:ok, actor} -> run_as(claimed, target, actor, opts)
-          {:error, reason} -> record_failure(claimed, :denied, no_authority(reason), opts)
+          {:error, reason} -> record_failure(claimed, {:denied, no_authority(reason)}, opts)
         end
 
       {:error, _message} ->
-        record_failure(claimed, :permanent, "target_unavailable", opts)
+        record_failure(claimed, {:permanent, "target_unavailable"}, opts)
     end
   end
 
   defp run_as(claimed, target, actor, opts) do
-    args = args(claimed, opts)
+    args = stored_args(claimed, opts)
 
     target_opts = [
       actor: actor,
       tenant: opts[:tenant],
-      context: %{
-        ash_agent: %{
-          invocation_id: claimed.id,
-          invocation_key: claimed.invocation_key,
-          lease_epoch: claimed.lease_epoch
-        }
-      }
+      context: %{ash_agent: context(claimed)}
     ]
 
     if target.effect.open_world? do
       case Target.run(target, args, target_opts) do
-        {:ok, summary} -> complete(claimed, :succeed, %{result: summary}, opts)
-        {:error, error} -> record_failure(claimed, failure_class(error), error_code(error), opts)
+        {:ok, value} -> complete(claimed, completion(value), opts)
+        {:error, error} -> record_failure(claimed, Failure.classify(error), opts)
       end
     else
       case run_with_completion(claimed, target, args, target_opts, opts) do
-        {:ok, _done} ->
-          {:ok, :succeeded}
+        {:ok, outcome} ->
+          {:ok, outcome}
 
         {:error, error} ->
           if lease_lost?(error),
             do: {:ok, :superseded},
-            else: record_failure(claimed, failure_class(error), error_code(error), opts)
+            else: record_failure(claimed, Failure.classify(error), opts)
       end
     end
   end
 
-  # The target's effect and `succeed` in one transaction. An exception in the target
-  # rolls it back like an error does; it is recorded rather than left for the lease to
-  # expire.
+  @doc false
+  # What a target and its lookup see of the invocation, under `context.ash_agent`.
+  @spec context(Ash.Resource.record()) :: map()
+  def context(invocation) do
+    %{
+      invocation_id: invocation.id,
+      invocation_key: invocation.invocation_key,
+      lease_epoch: invocation.lease_epoch
+    }
+  end
+
+  # The target's effect and its completion in one transaction. An exception in the
+  # target rolls it back like an error does; it is recorded rather than left for the
+  # lease to expire.
   defp run_with_completion(claimed, target, args, target_opts, opts) do
     [claimed.__struct__, target.resource]
     |> Enum.uniq()
     |> Ash.transact(fn ->
-      with {:ok, summary} <- Target.run(target, args, target_opts) do
-        complete_held(claimed, :succeed, %{result: summary}, opts)
+      with {:ok, value} <- Target.run(target, args, target_opts),
+           {action, input, outcome} = completion(value),
+           {:ok, _done} <- complete_held(claimed, action, input, opts) do
+        outcome
       end
     end)
   rescue
     error -> {:error, Ash.Error.to_ash_error(error, __STACKTRACE__)}
   end
 
-  defp record_failure(claimed, class, code, opts) do
-    case complete(claimed, :fail, %{failure_class: class, error_code: code}, opts) do
-      {:ok, :succeeded} -> {:ok, :failed}
-      other -> other
+  defp completion(%Dispatch{} = dispatch) do
+    {:dispatch,
+     %{
+       effect_ref: dispatch.effect_ref,
+       effect_system: dispatch.effect_system,
+       deadline_at: dispatch.deadline_at
+     }, :dispatched}
+  end
+
+  defp completion(summary), do: {:succeed, %{result: summary}, :succeeded}
+
+  defp record_failure(claimed, {_class, code} = classified, opts) do
+    max_attempts = Info.max_attempts(claimed.__struct__)
+
+    case Failure.next(classified, claimed.effects, claimed.attempt_count, max_attempts) do
+      {:retry, delay} ->
+        retry_at = DateTime.add(DateTime.utc_now(), delay, :millisecond)
+        complete(claimed, {:defer, %{retry_at: retry_at, error_code: code}, :deferred}, opts)
+
+      :unknown ->
+        complete(
+          claimed,
+          {:mark_outcome_unknown, %{error_code: code}, :outcome_unknown},
+          opts
+        )
+
+      :fail ->
+        complete(
+          claimed,
+          {:fail, %{failure_class: Failure.recorded_class(classified), error_code: code},
+           :failed},
+          opts
+        )
     end
   end
 
   # Completes in a transaction of its own.
-  defp complete(claimed, action, input, opts) do
+  defp complete(claimed, {action, input, outcome}, opts) do
     claimed.__struct__
     |> Ash.transact(fn -> complete_held(claimed, action, input, opts) end)
     |> case do
-      {:ok, _done} -> {:ok, :succeeded}
+      {:ok, _done} -> {:ok, outcome}
       {:error, error} -> if lease_lost?(error), do: {:ok, :superseded}, else: {:error, error}
     end
   end
@@ -201,13 +269,14 @@ defmodule AshAgent.Invocation.Executor do
     end
   end
 
-  defp args(claimed, opts) do
-    resource = claimed.__struct__
-
-    # A host that seals `args` turns the attribute into a calculation that opens it.
-    if Ash.Resource.Info.attribute(resource, :args),
-      do: claimed.args || %{},
-      else: Ash.load!(claimed, [:args], opts).args || %{}
+  @doc false
+  # The arguments the row was requested with. A host that seals `args` turns the
+  # attribute into a calculation that opens it.
+  @spec stored_args(Ash.Resource.record(), keyword()) :: map()
+  def stored_args(invocation, opts) do
+    if Ash.Resource.Info.attribute(invocation.__struct__, :args),
+      do: invocation.args || %{},
+      else: Ash.load!(invocation, [:args], opts).args || %{}
   end
 
   # The host's reason, when it is a plain name, says why the principal has no authority
@@ -217,14 +286,6 @@ defmodule AshAgent.Invocation.Executor do
        do: String.slice("no_authority: #{reason}", 0, 256)
 
   defp no_authority(_reason), do: "no_authority"
-
-  defp failure_class(%Ash.Error.Forbidden{}), do: :denied
-  defp failure_class(%Ash.Error.Invalid{}), do: :rejected
-  defp failure_class(_error), do: :permanent
-
-  defp error_code(%Ash.Error.Forbidden{}), do: "forbidden"
-  defp error_code(%Ash.Error.Invalid{}), do: "invalid"
-  defp error_code(_error), do: "error"
 
   defp lease_lost?(%LeaseLost{}), do: true
   defp lease_lost?(%{errors: errors}) when is_list(errors), do: Enum.any?(errors, &lease_lost?/1)
