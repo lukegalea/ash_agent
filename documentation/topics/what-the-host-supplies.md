@@ -5,8 +5,8 @@ SPDX-License-Identifier: MIT
 
 # What the host supplies
 
-This package ships declarations that a host application turns into resources. The split below is the design; none of
-the package's side is built yet.
+This package ships declarations that a host application turns into resources. The split below is the design; of the
+package's side, only the effects declaration is built yet.
 
 | Concern | The package declares | The host supplies |
 |---|---|---|
@@ -19,6 +19,7 @@ the package's side is built yet.
 | Policies | None | All of them |
 | Triggers and workers | The trigger names the actions expect, and a template in `usage-rules.md` | The `oban` blocks: worker and scheduler modules, queues, schedules, the default actor |
 | Audit | Nothing | Whatever audit trail it keeps |
+| Effects | The `effects` declaration (`AshAgent.Effects`), its verifiers, and a domain check that exposed tools are declared | A declaration on each action it exposes or governs |
 
 ## Example: a clinic
 
