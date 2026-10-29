@@ -28,6 +28,11 @@ defmodule AshAgent.InvocationTest do
 
   defp machinery, do: [actor: %{id: "machinery"}]
 
+  defp outcome(row) do
+    row = Domain.get_invocation!(row.id)
+    {row.status, row.failure_class, row.error_code}
+  end
+
   # What is stored, without the struct's load metadata.
   defp stored(row), do: row |> Map.from_struct() |> Map.drop([:__meta__, :__metadata__])
 
@@ -324,6 +329,35 @@ defmodule AshAgent.InvocationTest do
 
       assert :failed = Domain.execute_invocation!(%{"id" => row.id}, machinery())
       assert %{status: :failed, failure_class: :rejected} = Domain.get_invocation!(row.id)
+    end
+
+    test "a subject the principal can no longer read is a denial; one that is gone, a rejection",
+         %{nurse: nurse, lead: lead} do
+      kept = Ash.create!(CredentialCheck, %{licence_number: "RN-7"}, action: :record)
+      gone = Ash.create!(CredentialCheck, %{licence_number: "RN-8"}, action: :record)
+      out_of_reach = invoke!(nurse, @verify, %{"id" => kept.id})
+      missing = invoke!(nurse, @verify, %{"id" => gone.id})
+
+      # Between the request and the run: the first is restricted to someone else, the
+      # second deleted.
+      {1, _} =
+        Repo.update_all(
+          from(c in "credential_checks", where: c.id == type(^kept.id, Ecto.UUID)),
+          set: [restricted_to: lead.id]
+        )
+
+      {1, _} =
+        Repo.delete_all(from(c in "credential_checks", where: c.id == type(^gone.id, Ecto.UUID)))
+
+      for row <- [out_of_reach, missing] do
+        assert :failed = Domain.execute_invocation!(%{"id" => row.id}, machinery())
+      end
+
+      assert {:failed, :denied, "forbidden"} == outcome(out_of_reach)
+      assert {:failed, :rejected, "invalid"} == outcome(missing)
+
+      verified = Ash.get!(CredentialCheck, kept.id, authorize?: false)
+      refute verified.verified?
     end
   end
 

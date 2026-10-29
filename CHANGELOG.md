@@ -29,6 +29,9 @@ Nothing has been released yet.
   identity, so `invoke` never returns one person's row to another under the same automation.
   `AshAgent.ExecutionIdentity.delegation/1` states a principal as RFC 8693's `act` claim, and `request` stores it in
   `delegation`. A host's `actor_for/1` refusal reason, when an atom, is recorded as `"no_authority: <reason>"`.
+- An update or destroy target whose record the executing actor can no longer read fails as `:denied`
+  (`AshAgent.Invocation.SubjectUnreachable`, forbidden), and one whose record is gone as `:rejected`; both were
+  recorded as `:permanent`.
 - `AshAgent.Digest`: RFC 8785 canonical JSON, SHA-256 and HMAC-SHA256 digests of it.
 - `AshAgent.Effects`, a resource extension declaring per action what it does to the world: MCP's four tool-annotation
   hints with MCP's defaults, an explicit ACP tool kind, approval (`:none`, `:confirm`, `:four_eyes`) with approver role
