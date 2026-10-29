@@ -10,11 +10,15 @@ defmodule AshAgent.Test.CredentialCheck do
     * `:mark_verified` updates a check, so its subject is captured as a precondition.
     * `:notify_board` reaches outside (it only pretends to): the open-world path.
     * `:archive` is declared nowhere, so it cannot be invoked.
+
+  A check is visible to everyone unless it is `restricted_to` one person, such as a
+  check still under review: then only that person reads it.
   """
 
   use Ash.Resource,
     domain: AshAgent.Test.Domain,
     data_layer: AshPostgres.DataLayer,
+    authorizers: [Ash.Policy.Authorizer],
     extensions: [AshAgent.Effects]
 
   postgres do
@@ -72,6 +76,16 @@ defmodule AshAgent.Test.CredentialCheck do
     end
   end
 
+  policies do
+    policy action_type(:read) do
+      authorize_if expr(is_nil(restricted_to) or restricted_to == ^actor(:id))
+    end
+
+    policy action_type([:create, :update, :destroy, :action]) do
+      authorize_if always()
+    end
+  end
+
   attributes do
     uuid_primary_key :id
 
@@ -81,6 +95,7 @@ defmodule AshAgent.Test.CredentialCheck do
     end
 
     attribute :clinician_name, :string, public?: true
+    attribute :restricted_to, :string, public?: true
     attribute :verified?, :boolean, public?: true, allow_nil?: false, default: false
     attribute :version_number, :integer, public?: true, allow_nil?: false, default: 1
   end

@@ -57,13 +57,14 @@ defmodule AshAgent.Invocation do
       derives the principal (`c:AshAgent.ExecutionIdentity.principal_for/2`) and lineage,
       snapshots the effects declaration, digests the target and the arguments, captures
       the subject's `version_number`, and routes the row: `rejected` when the arguments
-      do not fit the target, `awaiting_approval` when the declaration asks for an
+      do not fit the target or name a record the caller cannot read, `awaiting_approval` when the declaration asks for an
       approval, `ready` otherwise. A ready row's `:execute` job is enqueued in the same
       transaction.
     * `claim` (update): `ready → executing`, or takes over an `executing` row whose lease
       has expired when its target writes only to this application. Takes the next lease
       epoch under `optimistic_lock(:lease_epoch)`, so of two claims from one reading one
-      wins.
+      wins. A row whose target is declared differently now from when it was requested
+      (its `target_digest` no longer matches) becomes `stale` instead, and nothing runs.
     * `succeed` and `fail` (updates): complete a claimed row, filtered on the epoch the
       worker claimed with. A worker whose lease was taken over matches no row, gets
       `Ash.Error.Changes.StaleRecord`, and its transaction rolls back.
@@ -104,7 +105,7 @@ defmodule AshAgent.Invocation do
 
     transitions do
       transition :apply_decision, from: :awaiting_approval, to: [:ready, :rejected, :stale]
-      transition :claim, from: [:ready, :executing], to: :executing
+      transition :claim, from: [:ready, :executing], to: [:executing, :stale]
       transition :succeed, from: :executing, to: :succeeded
       transition :fail, from: :executing, to: :failed
 
@@ -222,7 +223,7 @@ defmodule AshAgent.Invocation do
 
     action :execute, :atom do
       description "Claim a ready row, run its target as its principal, and record the outcome."
-      constraints one_of: [:succeeded, :failed, :skipped, :superseded]
+      constraints one_of: [:succeeded, :failed, :skipped, :superseded, :stale]
       transaction? false
 
       argument :primary_key, :map, allow_nil?: false

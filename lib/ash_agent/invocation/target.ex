@@ -71,9 +71,13 @@ defmodule AshAgent.Invocation.Target do
   Checks `args` against the target's inputs without running it.
 
   Returns `{:ok, prepared}` with the cast inputs and, for an update or a destroy, the
-  subject record, or `{:error, messages}`. The subject is read without authorization,
-  so that a missing record and an unreadable one look alike to the caller; whether the
-  executing principal may act on it is decided when the target runs.
+  subject record, or `{:error, messages}`.
+
+  The subject is read as the caller: `opts` carry the request's `actor`, `tenant`,
+  `authorize?` and `context`. A record the caller cannot read gets the same message as
+  one that does not exist, so a request tells its caller nothing about records outside
+  what they may read, not even whether one exists. Whether the executing principal may
+  act on the subject is decided again when the target runs.
   """
   @spec prepare(t(), map(), keyword()) ::
           {:ok, %{inputs: map(), subject: Ash.Resource.record() | nil}} | {:error, [String.t()]}
@@ -299,9 +303,9 @@ defmodule AshAgent.Invocation.Target do
     names = Ash.Resource.Info.primary_key(resource)
 
     if Enum.all?(names, &Map.has_key?(pk, Atom.to_string(&1))) do
-      case get(resource, pk, tenant: opts[:tenant], authorize?: false) do
+      case get(resource, pk, opts) do
         {:ok, record} -> {:ok, record}
-        {:error, _} -> {:error, ["the record to act on does not exist"]}
+        {:error, _not_found_or_forbidden} -> {:error, ["the record to act on was not found"]}
       end
     else
       {:error, ["#{Enum.join(names, ", ")} must name the record to act on"]}

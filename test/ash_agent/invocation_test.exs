@@ -5,6 +5,8 @@ defmodule AshAgent.InvocationTest do
   @moduledoc false
   use AshAgent.DataCase, async: false
 
+  import Ecto.Query, only: [from: 2]
+
   alias AshAgent.Invocation.{Executor, IdempotencyConflict, NoPrincipal}
   alias AshAgent.Test.{CredentialCheck, Domain, ExecutionIdentity, Invocation}
 
@@ -20,7 +22,10 @@ defmodule AshAgent.InvocationTest do
 
   defp args(n \\ 1), do: %{"licence_number" => "RN-#{n}", "clinician_name" => "Dana Reyes"}
   defp key, do: "test:#{System.unique_integer([:positive])}"
-  defp checks(licence), do: Domain.list_checks!(query: [filter: [licence_number: licence]])
+
+  defp checks(licence),
+    do: Domain.list_checks!(query: [filter: [licence_number: licence]], authorize?: false)
+
   defp machinery, do: [actor: %{id: "machinery"}]
 
   # What is stored, without the struct's load metadata.
@@ -28,6 +33,22 @@ defmodule AshAgent.InvocationTest do
 
   defp invoke!(actor, target, args, extra \\ %{}),
     do: Domain.invoke!(target, args, Map.put_new(extra, :key, key()), actor: actor)
+
+  # The row as it would be had it been requested under an earlier declaration of its
+  # target: its snapshot reads `changes`, and its target digest is not the current one.
+  # Written past the actions, because no action may rewrite what was requested.
+  defp requested_under_earlier_definition(row, changes \\ %{}) do
+    effects = Map.merge(row.effects, changes)
+    earlier = AshAgent.Digest.sha256_hex(%{"effects" => effects, "release" => "earlier"})
+
+    {1, _} =
+      Repo.update_all(
+        from(i in "invocations", where: i.id == type(^row.id, Ecto.UUID)),
+        set: [effects: effects, target_digest: earlier]
+      )
+
+    Domain.get_invocation!(row.id)
+  end
 
   describe "invoke" do
     test "records a ready request with everything derived on the server", %{nurse: nurse} do
@@ -154,6 +175,25 @@ defmodule AshAgent.InvocationTest do
 
       assert invoke!(nurse, @verify, %{"id" => Ash.UUID.generate()}).status == :rejected
     end
+
+    test "a record the caller cannot read is refused exactly as a missing one is",
+         %{nurse: nurse, lead: lead} do
+      hidden =
+        CredentialCheck
+        |> Ash.Changeset.for_create(:record, %{licence_number: "RN-9"})
+        |> Ash.Changeset.force_change_attribute(:restricted_to, lead.id)
+        |> Ash.create!()
+
+      hidden_row = invoke!(nurse, @verify, %{"id" => hidden.id})
+      missing_row = invoke!(nurse, @verify, %{"id" => Ash.UUID.generate()})
+
+      outcome = &Map.take(&1, [:status, :failure_class, :error_code, :preconditions])
+      assert outcome.(hidden_row) == outcome.(missing_row)
+      assert {hidden_row.status, hidden_row.preconditions} == {:rejected, []}
+
+      # The person who may read it may ask to act on it.
+      assert invoke!(lead, @verify, %{"id" => hidden.id}).status == :ready
+    end
   end
 
   describe "approval" do
@@ -263,6 +303,39 @@ defmodule AshAgent.InvocationTest do
       row = invoke!(nurse, @record, args())
       assert {:ok, _} = Executor.claim(row, machinery(), lease_for: 0)
       assert {:error, :not_claimable} = Executor.claim(row, machinery())
+    end
+  end
+
+  describe "a target whose declaration changed since the request" do
+    test "is not run: the claim marks the row stale", %{nurse: nurse} do
+      row = nurse |> invoke!(@record, args()) |> requested_under_earlier_definition()
+
+      assert :stale = Domain.execute_invocation!(%{"id" => row.id}, machinery())
+
+      stale = Domain.get_invocation!(row.id)
+
+      assert {stale.status, stale.error_code, stale.lease_expires_at} ==
+               {:stale, "target_changed", nil}
+
+      assert checks("RN-1") == []
+    end
+
+    test "an expired lease is not taken over under the old declaration", %{nurse: nurse} do
+      # Worker A claims while the target's declaration is the one requested...
+      row = invoke!(nurse, @notify, %{"licence_number" => "RN-1"})
+      {:ok, a} = Executor.claim(row, machinery(), lease_for: 0)
+
+      # ...then the row turns out to have been requested when the target wrote only to
+      # this application, which would let B take A's expired lease over and call out a
+      # second time while A is still in its call.
+      requested_under_earlier_definition(a, %{"open_world" => false})
+
+      assert {:error, :stale} = Executor.claim(Domain.get_invocation!(row.id), machinery())
+      assert Domain.get_invocation!(row.id).status == :stale
+
+      # A finishes its call, and its completion is refused.
+      assert {:ok, :superseded} = Executor.run_claimed(a, machinery())
+      assert Domain.get_invocation!(row.id).status == :stale
     end
   end
 
