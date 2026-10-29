@@ -7,7 +7,7 @@ defmodule AshAgent.Invocation.Changes.RequestCancel do
 
     * A row that has not started (`requested`, `awaiting_approval`, `ready`) becomes
       `cancelled`. A `ready` row's job still runs, finds the row not claimable and ends.
-    * A row that is `executing` or `dispatched` keeps its state and records
+    * A row that is `executing`, `dispatched` or `outcome_unknown` keeps its state and records
       `cancel_requested_at`: its work may already have happened, and what follows is for
       whoever completes or reconciles it to decide.
     * A finished row cannot be changed, so cancelling one is refused.
@@ -22,7 +22,7 @@ defmodule AshAgent.Invocation.Changes.RequestCancel do
   require Ash.Expr
 
   @not_started [:requested, :awaiting_approval, :ready]
-  @in_flight [:executing, :dispatched]
+  @in_flight [:executing, :dispatched, :outcome_unknown]
 
   @impl true
   def change(changeset, _opts, _context) do

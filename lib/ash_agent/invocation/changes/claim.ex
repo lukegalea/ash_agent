@@ -5,12 +5,14 @@ defmodule AshAgent.Invocation.Changes.Claim do
   @moduledoc """
   The `claim` action's work, after its filter and `optimistic_lock(:lease_epoch)`.
 
-  A row is claimable when it is `ready`, or when it is `executing` with an expired lease
-  and its target writes only to this application (`open_world: false` in its effects
-  snapshot). Such a target's effect commits in one transaction with `succeed`, so a lease
-  that expired without a `succeed` means the effect did not happen, and running it again
-  is safe. An open-world target's expired lease is not claimable: its effect may have
-  happened outside, and only reconciliation may decide.
+  A row is claimable when it is `ready` and its `next_attempt_at` (set by a backoff) has
+  come, or when it is `executing` with an expired lease and running its target again
+  cannot repeat its effect (`AshAgent.Invocation.Failure.repeatable?/1` on its effects
+  snapshot): the target writes only to this application, so its effect committed with
+  `succeed` or not at all, or it is idempotent, so the outside service deduplicates it by
+  the invocation key. Any other target's expired lease is not claimable: its effect may
+  have happened outside, and only reconciliation may decide
+  (`AshAgent.Invocation.Reconciler`).
 
   A claimable row's `target_digest` is then compared with the digest of the target as
   it is declared now. A row whose target changed since it was requested (its input
@@ -26,7 +28,7 @@ defmodule AshAgent.Invocation.Changes.Claim do
 
   use Ash.Resource.Change
 
-  alias AshAgent.Invocation.Target
+  alias AshAgent.Invocation.{Failure, Target}
 
   @impl true
   def change(changeset, _opts, _context) do
@@ -64,10 +66,13 @@ defmodule AshAgent.Invocation.Changes.Claim do
 
   @doc "Whether `invocation` may be claimed at `now`."
   @spec claimable?(Ash.Resource.record(), DateTime.t()) :: boolean()
+  def claimable?(%{status: :ready, next_attempt_at: %DateTime{} = at}, now),
+    do: DateTime.compare(at, now) != :gt
+
   def claimable?(%{status: :ready}, _now), do: true
 
   def claimable?(%{status: :executing, lease_expires_at: %DateTime{} = expires} = row, now),
-    do: DateTime.compare(expires, now) != :gt and not open_world?(row)
+    do: DateTime.compare(expires, now) != :gt and Failure.repeatable?(row.effects)
 
   def claimable?(_row, _now), do: false
 
@@ -82,9 +87,4 @@ defmodule AshAgent.Invocation.Changes.Claim do
       {:error, _unresolvable} -> false
     end
   end
-
-  # Undeclared or unknown counts as open-world: MCP's default, and the safe reading.
-  defp open_world?(%{effects: %{"open_world" => false}}), do: false
-  defp open_world?(%{effects: %{open_world: false}}), do: false
-  defp open_world?(_row), do: true
 end

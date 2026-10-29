@@ -16,6 +16,21 @@ Nothing has been released yet.
 
 ### Features:
 
+- Execution paths, typed failure and reconciliation for `AshAgent.Invocation`. A transient failure makes a row ready
+  again after a backoff, up to the `invocation` section's `max_attempts`, then fails it as `:transient`; `retry` makes
+  it ready again. An outside target that is not idempotent is never called twice for one claim: an error that leaves
+  its effect in doubt, or a lease that expires with no outcome, makes the row `outcome_unknown`. The new `reconcile`
+  action (the host's required `:reconcile` trigger) re-readies an expired lease when a rerun cannot repeat the effect,
+  settles an unknown outcome through the target's `reconcile_with` lookup, and otherwise asks a person
+  (`request_resolution`, `apply_resolution` with `:succeeded`, `:failed` or `:retry`). A target can hand its work on by
+  returning an `AshAgent.Invocation.Dispatch`: the row is `dispatched`, holds no lease, and is settled by
+  `complete_external` or by its deadline. A late callback on a final row is kept in `evidence` and changes nothing
+  else. New actions: `defer`, `dispatch`, `mark_outcome_unknown`, `requeue`, `complete_external`, `request_resolution`,
+  `apply_resolution`, `retry`, `reconcile`.
+- `AshAgent.BusinessError{code}` and the `AshAgent.FailureClass` protocol, with which a host classifies its own error
+  types. `AshAgent.Invocation.Failure` holds the table: class, what happens next, and what a process sees
+  (`bpmn/1`: a business error code, an incident, or waiting).
+
 - `AshAgent.Invocation`, a fragment for the invocation record: attributes, the lifecycle as a state machine, and the
   actions `invoke` (get by key or request; the same key with a different request is an
   `AshAgent.Invocation.IdempotencyConflict`, never an upsert), `request` (resolves the target, checks its arguments

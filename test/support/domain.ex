@@ -30,6 +30,10 @@ defmodule AshAgent.Test.Domain do
       define :apply_decision, action: :apply_decision
       define :request_cancel, action: :request_cancel
       define :execute_invocation, action: :execute, args: [:primary_key]
+      define :reconcile_invocation, action: :reconcile, args: [:primary_key]
+      define :complete_external, action: :complete_external
+      define :apply_resolution, action: :apply_resolution
+      define :retry_invocation, action: :retry
     end
 
     resource AshAgent.Test.Spike.ReferralJob do

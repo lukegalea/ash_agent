@@ -16,7 +16,7 @@ defmodule AshAgent.InvocationHostTest do
     assert AshAgent.Invocation.Info.digest_key(AshAgent.Test.Invocation) ==
              AshAgent.Test.DigestKey
 
-    refute AshAgent.Invocation.Info.execute_trigger?(AshAgent.Test.Invocation)
+    refute AshAgent.Invocation.Info.trigger?(AshAgent.Test.Invocation, :execute)
   end
 
   test "a resource that includes the fragment must name its identity and digest key" do
@@ -51,5 +51,43 @@ defmodule AshAgent.InvocationHostTest do
       end
 
     assert error.message =~ "trigger named :execute"
+  end
+
+  test "a resource using AshOban must declare the :reconcile trigger" do
+    error =
+      assert_dsl_error %DslError{path: [:oban, :triggers]} do
+        defmodule Elixir.AshAgent.InvocationHostTest.NoReconcileTrigger do
+          use Ash.Resource,
+            domain: nil,
+            data_layer: AshPostgres.DataLayer,
+            extensions: [AshOban],
+            fragments: [AshAgent.Invocation]
+
+          postgres do
+            table "invocations"
+            repo AshAgent.Test.Repo
+          end
+
+          invocation do
+            execution_identity AshAgent.Test.ExecutionIdentity
+            digest_key AshAgent.Test.DigestKey
+          end
+
+          oban do
+            domain AshAgent.Test.Domain
+
+            triggers do
+              trigger :execute do
+                action :execute
+                worker_module_name AshAgent.InvocationHostTest.NoReconcileTrigger.ExecuteWorker
+
+                scheduler_module_name AshAgent.InvocationHostTest.NoReconcileTrigger.ExecuteScheduler
+              end
+            end
+          end
+        end
+      end
+
+    assert error.message =~ "trigger named :reconcile"
   end
 end

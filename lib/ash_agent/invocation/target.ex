@@ -24,7 +24,7 @@ defmodule AshAgent.Invocation.Target do
   """
 
   alias AshAgent.Effects.Effect
-  alias AshAgent.Invocation.SubjectUnreachable
+  alias AshAgent.Invocation.{Dispatch, SubjectUnreachable}
 
   @typedoc "A resolved target."
   @type t :: %{
@@ -117,10 +117,10 @@ defmodule AshAgent.Invocation.Target do
 
   @doc """
   Runs the target with `args` as `opts[:actor]`, authorized, and returns a JSON-ready
-  summary of what it returned. `opts` are passed to the action (`actor`, `tenant`,
-  `context`).
+  summary of what it returned, or the `AshAgent.Invocation.Dispatch` it returned when it
+  handed the work on. `opts` are passed to the action (`actor`, `tenant`, `context`).
   """
-  @spec run(t(), map(), keyword()) :: {:ok, map()} | {:error, term()}
+  @spec run(t(), map(), keyword()) :: {:ok, map() | Dispatch.t()} | {:error, term()}
   def run(%{resource: resource, action: action}, args, opts) do
     args = Map.new(args, fn {key, value} -> {to_string(key), value} end)
     {pk, inputs} = Map.split(args, primary_key_names(resource, action))
@@ -129,11 +129,103 @@ defmodule AshAgent.Invocation.Target do
     resource
     |> run_action(action, pk, inputs, opts)
     |> case do
+      {:ok, %Dispatch{} = dispatch} -> {:ok, dispatch}
       {:ok, value} -> {:ok, summarize(value)}
       :ok -> {:ok, %{}}
       {:error, error} -> {:error, error}
     end
   end
+
+  @typedoc "What a target's `reconcile_with` action found."
+  @type found :: %{
+          outcome: :succeeded | :not_found | :unknown,
+          effect_ref: String.t() | nil,
+          effect_system: String.t() | nil
+        }
+
+  @doc """
+  Runs the target's `reconcile_with` action, as `opts[:actor]` and authorized, to find
+  out whether the effect of a call whose outcome was lost happened.
+
+  The action gets those of `args` that are its inputs, plus `invocation_key` when it has
+  an input of that name (an outside service that took the key as its idempotency key
+  can be asked by it); `opts[:context]` carries the invocation under `:ash_agent`, as for
+  the target. What it returns is read as:
+
+    * a `:read` action: a record found means the effect happened, and its primary key is
+      the effect's reference; none found means it did not;
+    * a generic action: `:succeeded`, `:not_found` or `:unknown` (as an atom or a
+      string), or a map with that as `outcome` and optionally `effect_ref` and
+      `effect_system`. Anything else is `:unknown`.
+
+  `{:error, :no_reconcile_with}` when the target declares none.
+  """
+  @spec lookup(t(), String.t(), map(), keyword()) :: {:ok, found()} | {:error, term()}
+  def lookup(%{resource: resource, effect: %{reconcile_with: name}}, key, args, opts)
+      when not is_nil(name) do
+    action = Ash.Resource.Info.action(resource, name)
+    inputs = lookup_inputs(resource, action, key, args)
+    opts = Keyword.put(opts, :authorize?, true)
+
+    case action.type do
+      :read ->
+        resource
+        |> Ash.Query.for_read(name, inputs, opts)
+        |> Ash.Query.limit(1)
+        |> Ash.read()
+        |> case do
+          {:ok, [record | _]} ->
+            {:ok, found(:succeeded, primary_key_string(resource, record), nil)}
+
+          {:ok, []} ->
+            {:ok, found(:not_found, nil, nil)}
+
+          {:error, error} ->
+            {:error, error}
+        end
+
+      :action ->
+        resource
+        |> Ash.ActionInput.for_action(name, inputs, opts)
+        |> Ash.run_action()
+        |> case do
+          {:ok, value} -> {:ok, interpret(value)}
+          {:error, error} -> {:error, error}
+        end
+    end
+  end
+
+  def lookup(_target, _key, _args, _opts), do: {:error, :no_reconcile_with}
+
+  defp lookup_inputs(resource, action, key, args) do
+    fields = input_fields(resource, action)
+    args = Map.new(args, fn {name, value} -> {to_string(name), value} end)
+
+    args
+    |> Map.take(Map.keys(fields))
+    |> then(fn inputs ->
+      if Map.has_key?(fields, "invocation_key"),
+        do: Map.put(inputs, "invocation_key", key),
+        else: inputs
+    end)
+  end
+
+  defp interpret(%{} = found) do
+    get = fn name -> Map.get(found, name, Map.get(found, to_string(name))) end
+    found(outcome(get.(:outcome)), string(get.(:effect_ref)), string(get.(:effect_system)))
+  end
+
+  defp interpret(outcome), do: found(outcome(outcome), nil, nil)
+
+  defp outcome(outcome) when outcome in [:succeeded, "succeeded"], do: :succeeded
+  defp outcome(outcome) when outcome in [:not_found, "not_found"], do: :not_found
+  defp outcome(_outcome), do: :unknown
+
+  defp found(outcome, ref, system),
+    do: %{outcome: outcome, effect_ref: ref, effect_system: system}
+
+  defp string(nil), do: nil
+  defp string(value), do: to_string(value)
 
   defp run_action(resource, %{type: :create, name: name}, _pk, inputs, opts) do
     resource |> Ash.Changeset.for_create(name, inputs, opts) |> Ash.create()
