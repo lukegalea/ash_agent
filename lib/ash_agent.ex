@@ -29,8 +29,8 @@ defmodule AshAgent do
 
   ## Status
 
-  This is the bootstrap release. No fragment, extension or behaviour is built
-  yet; `usage-rules.md` lists what is planned and marks each part as not yet
-  built.
+  The effects declaration is built: `AshAgent.Effects` on resources and
+  `AshAgent.Effects.Domain` on domains. No fragment or behaviour is built yet;
+  `usage-rules.md` lists what is planned and marks each part as not yet built.
   """
 end

@@ -10,3 +10,5 @@ erl_crash.dump
 /.devenv*
 .devenv.flake.nix
 .devenv.json
+# ExUnit @tag :tmp_dir
+/tmp/

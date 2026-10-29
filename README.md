@@ -7,9 +7,8 @@ SPDX-License-Identifier: MIT
 
 Governed invocations and durable agent runs for [Ash Framework](https://ash-hq.org) hosts.
 
-> **Status: bootstrap.** This repository has its build, CI and dependency boundary in place, and nothing else yet.
-> No fragment, extension or behaviour described below is built. [`usage-rules.md`](usage-rules.md) marks each part as
-> not yet built until it lands.
+> **Status: early.** The effects declaration (`AshAgent.Effects`) is built. No fragment or behaviour described below is
+> built yet. [`usage-rules.md`](usage-rules.md) marks each part as not yet built until it lands.
 
 ## What it is for
 
