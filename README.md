@@ -7,8 +7,9 @@ SPDX-License-Identifier: MIT
 
 Governed invocations and durable agent runs for [Ash Framework](https://ash-hq.org) hosts.
 
-> **Status: early.** The effects declaration (`AshAgent.Effects`) is built. No fragment or behaviour described below is
-> built yet. [`usage-rules.md`](usage-rules.md) marks each part as not yet built until it lands.
+> **Status: early.** The effects declaration (`AshAgent.Effects`) and the invocation fragment (`AshAgent.Invocation`)
+> with its two host behaviours are built. Durable agent runs are not built yet. [`usage-rules.md`](usage-rules.md) says
+> which parts have landed.
 
 ## What it is for
 
@@ -36,8 +37,8 @@ its own resources and supplies everything that depends on the application:
 - policies;
 - ash_oban triggers, and therefore the workers, queues and schedules;
 - audit and encryption at rest;
-- implementations of the package's behaviours: who an invocation executes as, how an approval is opened and read, and
-  where execution history comes from.
+- implementations of the package's behaviours: who an invocation executes as and the key its argument digest is
+  taken under; later, how an approval is opened and read, and where execution history comes from.
 
 See [What the host supplies](documentation/topics/what-the-host-supplies.md).
 

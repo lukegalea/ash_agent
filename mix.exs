@@ -67,6 +67,9 @@ defmodule AshAgent.MixProject do
       {:ash_ai, "~> 1.3"},
       {:ash_state_machine, "~> 0.2"},
       {:ash_oban, "~> 0.9"},
+      # RFC 8785 canonical JSON, for digests of arguments and of a target's
+      # declaration that must not depend on key order.
+      {:jcs, "~> 0.2"},
       # The test host's data layer. A consuming application brings its own.
       {:ash_postgres, "~> 2.14", only: [:dev, :test]},
       # Spark.Formatter, the formatter plugin, needs it.
