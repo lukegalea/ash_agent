@@ -12,7 +12,8 @@ defmodule AshAgent.Invocation.Changes.Request do
     2. the target resolves to an action with an effects declaration
        (`AshAgent.Invocation.Target`), which is snapshotted with the target's digest;
     3. the host names the principal the work executes as
-       (`c:AshAgent.ExecutionIdentity.principal_for/2`);
+       (`c:AshAgent.ExecutionIdentity.principal_for/2`), also kept as RFC 8693
+       delegation (`AshAgent.ExecutionIdentity.delegation/1`);
     4. the arguments are checked against the target without running it, and the row is
        routed: `rejected` if they do not fit or name a record the caller cannot read,
        `awaiting_approval` if the declaration asks for an approval, `ready` otherwise. The subject's `version_number` is kept
@@ -47,6 +48,7 @@ defmodule AshAgent.Invocation.Changes.Request do
           kind: Lineage.kind(lineage),
           mode: :live,
           executing_principal: principal,
+          delegation: AshAgent.ExecutionIdentity.delegation(principal),
           effects: Effect.to_map(target.effect),
           target_digest: Target.digest(target),
           approval_mode: target.effect.approval

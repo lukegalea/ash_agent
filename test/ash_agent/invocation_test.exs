@@ -196,6 +196,67 @@ defmodule AshAgent.InvocationTest do
     end
   end
 
+  describe "automation principals" do
+    defp automation(person, agent \\ "triage"),
+      do: %{automation: "intake", for: person, agent: agent}
+
+    test "record the person they act for and their agent, and the delegation they imply",
+         %{nurse: nurse} do
+      row = invoke!(automation(nurse), @record, args())
+
+      assert row.executing_principal == %{
+               type: :automation,
+               id: "intake",
+               on_behalf_of: nurse.id,
+               agent: "triage"
+             }
+
+      assert row.delegation == %{
+               "sub" => "person:#{nurse.id}",
+               "act" => %{"sub" => "automation:intake", "client_id" => "triage"}
+             }
+
+      # A person acting as themselves delegates nothing.
+      assert invoke!(nurse, @record, args(2)).delegation == nil
+    end
+
+    test "the same key for another person, or another agent, is a conflict, not their row",
+         %{nurse: nurse, lead: lead} do
+      key = key()
+      first = Domain.invoke!(@record, args(), %{key: key}, actor: automation(nurse))
+
+      for actor <- [automation(lead), automation(nurse, "billing"), automation(nil)] do
+        assert {:error, %Ash.Error.Invalid{errors: [%IdempotencyConflict{}]}} =
+                 Domain.invoke(@record, args(), %{key: key}, actor: actor)
+      end
+
+      assert Domain.invoke!(@record, args(), %{key: key}, actor: automation(nurse)).id ==
+               first.id
+    end
+
+    test "run only while both the automation and its person have authority", %{nurse: nurse} do
+      ran = invoke!(automation(nurse), @record, args(1))
+      assert :succeeded = Domain.execute_invocation!(%{"id" => ran.id}, machinery())
+
+      for {revoked, n} <- [{"intake", 2}, {nurse.id, 3}] do
+        row = invoke!(automation(nurse), @record, args(n))
+        ExecutionIdentity.revoke(revoked)
+
+        assert :failed = Domain.execute_invocation!(%{"id" => row.id}, machinery())
+
+        failed = Domain.get_invocation!(row.id)
+
+        assert {failed.status, failed.failure_class, failed.error_code} ==
+                 {:failed, :denied, "no_authority: revoked"}
+
+        assert checks("RN-#{n}") == []
+        ExecutionIdentity.restore()
+      end
+
+      assert [_ran] = checks("RN-1")
+    end
+  end
+
   describe "approval" do
     test "a target that asks for approval waits for a decision", %{nurse: nurse, lead: lead} do
       row = invoke!(nurse, @reviewed, args())
@@ -250,7 +311,10 @@ defmodule AshAgent.InvocationTest do
       assert :failed = Domain.execute_invocation!(%{"id" => row.id}, machinery())
 
       failed = Domain.get_invocation!(row.id)
-      assert {failed.status, failed.failure_class} == {:failed, :denied}
+
+      assert {failed.status, failed.failure_class, failed.error_code} ==
+               {:failed, :denied, "no_authority: revoked"}
+
       assert checks("RN-1") == []
     end
 

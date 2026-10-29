@@ -311,15 +311,24 @@ defmodule AshAgent.Invocation do
                       allow_nil?: false,
                       constraints: [one_of: [:person, :automation]]
                     ],
-                    id: [type: :string, allow_nil?: false]
+                    id: [type: :string, allow_nil?: false],
+                    on_behalf_of: [type: :string, allow_nil?: true],
+                    agent: [type: :string, allow_nil?: true]
                   ]
 
-      description "Who the target runs as: a person or a named automation principal."
+      description """
+      Who the target runs as: a person, or a named automation principal with the person
+      it acts for and the agent it runs for (`AshAgent.ExecutionIdentity`).
+      """
     end
 
     attribute :delegation, :map do
       public? true
-      description "The delegation chain, in RFC 8693's nested `act` shape. Informational."
+
+      description """
+      The executing principal in RFC 8693's nested `act` shape
+      (`AshAgent.ExecutionIdentity.delegation/1`). Informational.
+      """
     end
 
     # --- lineage ---
