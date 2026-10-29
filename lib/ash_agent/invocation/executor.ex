@@ -34,6 +34,8 @@ defmodule AshAgent.Invocation.Executor do
        failure makes the row `ready` again after a backoff (`defer`) until the host's
        `max_attempts`; one whose effect is in doubt on an outside target that is not
        idempotent makes it `outcome_unknown`; anything else fails it with its class.
+       A subject the executing actor can no longer reach is `:denied`; one that is gone
+       is `:rejected`.
 
   Every function returns `{:ok, outcome}` with `outcome` one of `outcomes/0`: `:succeeded`,
   `:failed`, `:deferred` (ready again after a backoff), `:dispatched`,

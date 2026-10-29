@@ -10,6 +10,8 @@ defmodule AshAgent.Invocation.Failure do
   |---|---|---|---|
   | `Ash.Error.Forbidden` | `:denied` | `failed`, final | an incident |
   | `Ash.Error.Invalid` | `:rejected` | `failed`, final | an incident |
+  | the subject of an update or destroy is gone (`NotFound`, invalid) | `:rejected` | `failed`, final | an incident |
+  | the subject is there but the executing actor cannot reach it (`AshAgent.Invocation.SubjectUnreachable`, forbidden) | `:denied` | `failed`, final | an incident |
   | `AshAgent.BusinessError{code}` | `:business` | `failed`, final | a business error `code` |
   | transient (`AshAgent.FailureClass`) | `:transient` | `ready` again after a backoff, until `max_attempts`; then `failed`, which `retry` may re-ready | waits; then an incident |
   | indeterminate, on a target that writes only here, or an idempotent one | `:transient` | as transient: running it again is safe | waits |

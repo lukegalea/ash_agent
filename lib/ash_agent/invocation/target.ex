@@ -24,7 +24,7 @@ defmodule AshAgent.Invocation.Target do
   """
 
   alias AshAgent.Effects.Effect
-  alias AshAgent.Invocation.Dispatch
+  alias AshAgent.Invocation.{Dispatch, SubjectUnreachable}
 
   @typedoc "A resolved target."
   @type t :: %{
@@ -232,13 +232,13 @@ defmodule AshAgent.Invocation.Target do
   end
 
   defp run_action(resource, %{type: :update, name: name}, pk, inputs, opts) do
-    with {:ok, record} <- get(resource, pk, opts) do
+    with {:ok, record} <- reach(resource, pk, opts) do
       record |> Ash.Changeset.for_update(name, inputs, opts) |> Ash.update()
     end
   end
 
   defp run_action(resource, %{type: :destroy, name: name}, pk, inputs, opts) do
-    with {:ok, record} <- get(resource, pk, opts) do
+    with {:ok, record} <- reach(resource, pk, opts) do
       record
       |> Ash.Changeset.for_destroy(name, inputs, opts)
       |> Ash.destroy(return_destroyed?: true)
@@ -260,6 +260,31 @@ defmodule AshAgent.Invocation.Target do
     |> case do
       {:ok, nil} -> {:error, Ash.Error.Query.NotFound.exception(resource: resource)}
       other -> other
+    end
+  end
+
+  # The subject as the running actor reads it. When they cannot, whether the record is
+  # still there decides the refusal: gone is a request that no longer fits (`NotFound`,
+  # invalid), there but out of reach is the actor refused (`SubjectUnreachable`,
+  # forbidden). Only the executor sees which; the request never learns more than that the
+  # run failed.
+  defp reach(resource, pk, opts) do
+    case get(resource, pk, opts) do
+      {:error, %Ash.Error.Query.NotFound{}} ->
+        exists? =
+          resource
+          |> Ash.Query.do_filter(pk_filter(resource, pk))
+          |> Ash.exists?(Keyword.take(opts, [:tenant, :context]) ++ [authorize?: false])
+
+        if exists?,
+          do:
+            {:error, Ash.Error.to_error_class(SubjectUnreachable.exception(resource: resource))},
+          else:
+            {:error,
+             Ash.Error.to_error_class(Ash.Error.Query.NotFound.exception(resource: resource))}
+
+      other ->
+        other
     end
   end
 
