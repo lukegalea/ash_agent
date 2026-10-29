@@ -25,9 +25,7 @@ defmodule AshAgent.Invocation.Executor do
          lost acknowledgement is not built in this version.
     4. A target that fails is recorded with `fail` under the same fence and a failure
        class: `:denied` for a forbidden error, `:rejected` for an invalid one,
-       `:permanent` otherwise. An update or destroy whose record the actor can no longer
-       read is forbidden (`AshAgent.Invocation.SubjectUnreachable`); one whose record is
-       gone is invalid.
+       `:permanent` otherwise.
 
   Every function returns `{:ok, outcome}` with `outcome` one of `:succeeded`, `:failed`,
   `:skipped` (not claimable), `:superseded` (the lease was lost before completing) and
