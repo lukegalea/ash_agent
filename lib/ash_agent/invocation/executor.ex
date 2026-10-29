@@ -11,7 +11,8 @@ defmodule AshAgent.Invocation.Executor do
        `stale` at the claim, and ends with `:stale`; its target never runs.
     2. **Identity** (`c:AshAgent.ExecutionIdentity.actor_for/1`): the actor to run as is
        built afresh from the row's principal. A principal with no authority now fails the
-       row as `:denied`; the target does not run.
+       row as `:denied`, with `error_code` `"no_authority"` (followed by the host's reason
+       when that is an atom, as in `"no_authority: inactive"`); the target does not run.
     3. **Run and record** (`run_claimed/2`), on the path the target's current
        declaration names, which the claim checked is the one requested:
        * a target that writes only to this application (`open_world: false`) runs in one
@@ -98,7 +99,7 @@ defmodule AshAgent.Invocation.Executor do
       {:ok, target} ->
         case Info.execution_identity(resource).actor_for(claimed) do
           {:ok, actor} -> run_as(claimed, target, actor, opts)
-          {:error, _reason} -> record_failure(claimed, :denied, "no_authority", opts)
+          {:error, reason} -> record_failure(claimed, :denied, no_authority(reason), opts)
         end
 
       {:error, _message} ->
@@ -208,6 +209,14 @@ defmodule AshAgent.Invocation.Executor do
       do: claimed.args || %{},
       else: Ash.load!(claimed, [:args], opts).args || %{}
   end
+
+  # The host's reason, when it is a plain name, says why the principal has no authority
+  # now: an inactive account, a revoked grant. Anything else stays out of the row.
+  defp no_authority(reason)
+       when is_atom(reason) and not is_nil(reason) and not is_boolean(reason),
+       do: String.slice("no_authority: #{reason}", 0, 256)
+
+  defp no_authority(_reason), do: "no_authority"
 
   defp failure_class(%Ash.Error.Forbidden{}), do: :denied
   defp failure_class(%Ash.Error.Invalid{}), do: :rejected

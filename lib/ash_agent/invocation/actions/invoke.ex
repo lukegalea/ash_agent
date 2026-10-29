@@ -16,13 +16,15 @@ defmodule AshAgent.Invocation.Actions.Invoke do
   comparison, so it returns the winner's row or a conflict.
 
   The read by key is not authorized: it is the action's own bookkeeping, and the row it
-  finds is returned only to a caller with the same principal.
+  finds is returned only to a caller with the same principal, which for an automation
+  principal includes the person it acts for and its agent.
   """
 
   use Ash.Resource.Actions.Implementation
 
   require Ash.Query
 
+  alias AshAgent.ExecutionIdentity
   alias AshAgent.Invocation.{IdempotencyConflict, Info, Lineage}
 
   @impl true
@@ -103,14 +105,9 @@ defmodule AshAgent.Invocation.Actions.Invoke do
   defp same_args?(_row, _args), do: false
 
   defp same_principal?(stored, principal) when is_map(stored),
-    do: principal_key(stored) == principal_key(principal)
+    do: ExecutionIdentity.identity(stored) == ExecutionIdentity.identity(principal)
 
   defp same_principal?(_stored, _principal), do: false
-
-  defp principal_key(principal) do
-    {to_string(Map.get(principal, :type) || Map.get(principal, "type")),
-     to_string(Map.get(principal, :id) || Map.get(principal, "id"))}
-  end
 
   defp lineage(parent) do
     case Lineage.from_parent(parent) do

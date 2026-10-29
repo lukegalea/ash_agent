@@ -25,6 +25,10 @@ Nothing has been released yet.
   `request_cancel` and `execute` (a generic action with no transaction; `AshAgent.Invocation.Executor`).
 - `AshAgent.ExecutionIdentity` and `AshAgent.DigestKey`, the behaviours the fragment calls, named in the resource's
   `invocation` section and checked when it compiles.
+- Automation principals carry the person they act for (`on_behalf_of`) and their `agent`, both part of the principal's
+  identity, so `invoke` never returns one person's row to another under the same automation.
+  `AshAgent.ExecutionIdentity.delegation/1` states a principal as RFC 8693's `act` claim, and `request` stores it in
+  `delegation`. A host's `actor_for/1` refusal reason, when an atom, is recorded as `"no_authority: <reason>"`.
 - `AshAgent.Digest`: RFC 8785 canonical JSON, SHA-256 and HMAC-SHA256 digests of it.
 - `AshAgent.Effects`, a resource extension declaring per action what it does to the world: MCP's four tool-annotation
   hints with MCP's defaults, an explicit ACP tool kind, approval (`:none`, `:confirm`, `:four_eyes`) with approver role
