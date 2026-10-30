@@ -21,6 +21,13 @@ defmodule AshAgent.Invocation.Changes.Claim do
   what would run, and the snapshot the takeover rule above reads no longer describes the
   code. A target that no longer resolves is claimed as before, and the executor fails it.
 
+  A row that needed an approval is then checked again, inside the claim's transaction,
+  with `AshAgent.Invocation.Approval.stale_reason/2`: an approval that has expired, or
+  whose digest no longer matches the row, the target as declared now and the
+  preconditions' records as they stand now (a subject changed since it was approved),
+  makes the row `stale` with the reason as `error_code`, and nothing runs. An approval
+  is checked at every claim, not once: it is what was approved, not an exemption.
+
   Otherwise the claim moves the row to `executing`, starts a lease of `lease_for`
   milliseconds, and counts the attempt. The epoch is taken by the action's
   `optimistic_lock`, so two claims from one reading cannot both win.
@@ -28,7 +35,7 @@ defmodule AshAgent.Invocation.Changes.Claim do
 
   use Ash.Resource.Change
 
-  alias AshAgent.Invocation.{Failure, Target}
+  alias AshAgent.Invocation.{Approval, Failure, Target}
 
   @impl true
   def change(changeset, _opts, _context) do
@@ -44,13 +51,7 @@ defmodule AshAgent.Invocation.Changes.Claim do
         )
 
       target_changed?(data) ->
-        changeset
-        |> AshStateMachine.transition_state(:stale)
-        |> Ash.Changeset.force_change_attributes(%{
-          error_code: "target_changed",
-          lease_expires_at: nil,
-          next_attempt_at: nil
-        })
+        stale(changeset, "target_changed")
 
       true ->
         changeset
@@ -61,7 +62,26 @@ defmodule AshAgent.Invocation.Changes.Claim do
           attempt_count: data.attempt_count + 1,
           next_attempt_at: nil
         })
+        |> Ash.Changeset.before_action(&recheck_approval/1)
     end
+  end
+
+  defp recheck_approval(changeset) do
+    case Approval.stale_reason(changeset.data, tenant: changeset.tenant) do
+      nil -> changeset
+      reason -> stale(changeset, reason)
+    end
+  end
+
+  defp stale(changeset, reason) do
+    changeset
+    |> AshStateMachine.transition_state(:stale)
+    |> Ash.Changeset.force_change_attributes(%{
+      error_code: reason,
+      lease_expires_at: nil,
+      attempt_count: changeset.data.attempt_count,
+      next_attempt_at: nil
+    })
   end
 
   @doc "Whether `invocation` may be claimed at `now`."

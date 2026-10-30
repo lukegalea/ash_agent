@@ -21,7 +21,10 @@ defmodule AshAgent.Invocation.Changes.Request do
        destroy acts on, else nil) are put in the changeset context under `:ash_agent`,
        for the host's own changes on `request`, which run after this one;
     5. just before the insert, once every change of the action (the host's included)
-       has run, the arguments are digested under the host's key (`AshAgent.DigestKey`);
+       has run, the arguments are digested under the host's key (`AshAgent.DigestKey`),
+       and a row awaiting approval records what an approval of it binds: its
+       `authorization_details`, their `approval_digest` and `approval_expires_at`
+       (`AshAgent.Invocation.Approval`);
     6. after the insert, inside its transaction, a ready row's `:execute` job is
        enqueued, so a committed ready row always has a job and a rolled-back one never
        does.
@@ -33,7 +36,7 @@ defmodule AshAgent.Invocation.Changes.Request do
   use Ash.Resource.Change
 
   alias AshAgent.Effects.Effect
-  alias AshAgent.Invocation.{Enqueue, Info, Lineage, Target}
+  alias AshAgent.Invocation.{Approval, Enqueue, Info, Lineage, Target}
 
   @impl true
   def change(changeset, _opts, context) do
@@ -56,6 +59,7 @@ defmodule AshAgent.Invocation.Changes.Request do
       )
       |> route(target, args, context)
       |> Ash.Changeset.before_action(&digest_args(&1, args))
+      |> Ash.Changeset.before_action(&bind_approval/1)
       |> Ash.Changeset.after_action(&Enqueue.when_ready/2)
     else
       {:error, field, message} ->
@@ -104,6 +108,10 @@ defmodule AshAgent.Invocation.Changes.Request do
         )
         |> Ash.Changeset.set_context(%{ash_agent: %{target: target, subject: subject}})
         |> AshStateMachine.transition_state(first_state(target.effect))
+        |> Ash.Changeset.force_change_attribute(
+          :approval_expires_at,
+          Approval.expires_at(target.effect, DateTime.utc_now())
+        )
 
       {:error, messages} ->
         changeset
@@ -117,6 +125,39 @@ defmodule AshAgent.Invocation.Changes.Request do
 
   defp first_state(%Effect{approval: :none}), do: :ready
   defp first_state(%Effect{}), do: :awaiting_approval
+
+  # After `digest_args/2`, so the arguments' digest is part of what is bound.
+  defp bind_approval(changeset) do
+    if Ash.Changeset.get_attribute(changeset, :status) == :awaiting_approval do
+      details =
+        Approval.details(%{
+          target: Ash.Changeset.get_attribute(changeset, :target),
+          target_digest: Ash.Changeset.get_attribute(changeset, :target_digest),
+          args_digest: Ash.Changeset.get_attribute(changeset, :args_digest),
+          preconditions: Ash.Changeset.get_attribute(changeset, :preconditions),
+          identifier: identifier(changeset)
+        })
+
+      Ash.Changeset.force_change_attributes(changeset, %{
+        authorization_details: details,
+        approval_digest: Approval.digest(details)
+      })
+    else
+      changeset
+    end
+  end
+
+  defp identifier(changeset) do
+    case changeset.context do
+      %{ash_agent: %{subject: %{__struct__: resource} = subject}} ->
+        resource
+        |> Ash.Resource.Info.primary_key()
+        |> Enum.map_join(",", &to_string(Map.get(subject, &1)))
+
+      _no_subject ->
+        nil
+    end
+  end
 
   defp digest_args(changeset, args) do
     with {:ok, record} <- Ash.Changeset.apply_attributes(changeset),

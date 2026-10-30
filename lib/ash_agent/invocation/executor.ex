@@ -7,8 +7,9 @@ defmodule AshAgent.Invocation.Executor do
 
     1. **Claim** (`claim/3`, its own transaction): takes the next lease epoch. Of two
        workers holding the same row, one claims and the other ends with `:skipped`. A
-       row whose target is declared differently now from when it was requested becomes
-       `stale` at the claim, and ends with `:stale`; its target never runs.
+       row whose target is declared differently now from when it was requested, or whose
+       approval no longer holds (`AshAgent.Invocation.Approval`), becomes `stale` at the
+       claim, and ends with `:stale`; its target never runs.
     2. **Identity** (`c:AshAgent.ExecutionIdentity.actor_for/1`): the actor to run as is
        built afresh from the row's principal. A principal with no authority now fails the
        row as `:denied`, with `error_code` `"no_authority"` (followed by the host's reason
@@ -40,7 +41,8 @@ defmodule AshAgent.Invocation.Executor do
   Every function returns `{:ok, outcome}` with `outcome` one of `outcomes/0`: `:succeeded`,
   `:failed`, `:deferred` (ready again after a backoff), `:dispatched`,
   `:outcome_unknown`, `:skipped` (not claimable), `:superseded` (the lease was lost
-  before completing) and `:stale` (the target changed since the request).
+  before completing) and `:stale` (the target changed since the request, or its
+  approval no longer holds).
   `opts` carry the actor and tenant the invocation row is read and written with: the
   machinery's, not the target's.
   """
@@ -99,8 +101,8 @@ defmodule AshAgent.Invocation.Executor do
 
   `{:error, :not_claimable}` when the row is not ready and holds no expired lease, or
   when another claim took it first. `{:error, :stale}` when its target is declared
-  differently now from when it was requested: the claim has made the row `stale`, and it
-  must not run.
+  differently now from when it was requested, or its approval no longer holds: the claim
+  has made the row `stale`, and it must not run.
   """
   @spec claim(Ash.Resource.record(), keyword(), keyword()) ::
           {:ok, Ash.Resource.record()} | {:error, :not_claimable | :stale | term()}
