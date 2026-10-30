@@ -16,6 +16,13 @@ Nothing has been released yet.
 
 ### Features:
 
+- Approvals bind the request they approve. `request` records, for a row awaiting approval, its RFC 9396
+  `authorization_details`, their `approval_digest` (SHA-256 of the RFC 8785 canonical JSON) and `approval_expires_at`
+  from the declaration's `approval_expires_in` (`AshAgent.Invocation.Approval`). `apply_decision` makes an approved row
+  ready only while the digest recomputed from the row, the target as declared now and the preconditions' records as
+  they stand now still matches and the approval has not expired; `claim` checks the same before every attempt.
+  Otherwise the row is `stale`, with `error_code` naming why. `AshAgent.Invocation.Target.current_preconditions/2`
+  reads the preconditions' records as they stand now.
 - Execution paths, typed failure and reconciliation for `AshAgent.Invocation`. A transient failure makes a row ready
   again after a backoff, up to the `invocation` section's `max_attempts`, then fails it as `:transient`; `retry` makes
   it ready again. An outside target that is not idempotent is never called twice for one claim: an error that leaves

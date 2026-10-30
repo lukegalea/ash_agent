@@ -7,13 +7,14 @@ defmodule AshAgent.InvocationTest do
 
   import Ecto.Query, only: [from: 2]
 
-  alias AshAgent.Invocation.{Executor, IdempotencyConflict, NoPrincipal}
+  alias AshAgent.Invocation.{Approval, Executor, IdempotencyConflict, NoPrincipal}
   alias AshAgent.Test.{CredentialCheck, Domain, ExecutionIdentity, Invocation}
 
   @record "AshAgent.Test.CredentialCheck.record"
   @reviewed "AshAgent.Test.CredentialCheck.record_reviewed"
   @notify "AshAgent.Test.CredentialCheck.notify_board"
   @verify "AshAgent.Test.CredentialCheck.mark_verified"
+  @suspend "AshAgent.Test.CredentialCheck.suspend"
 
   setup do
     on_exit(&ExecutionIdentity.restore/0)
@@ -283,6 +284,154 @@ defmodule AshAgent.InvocationTest do
       row = invoke!(nurse, @reviewed, args())
       assert {:error, %Ash.Error.Invalid{}} = Domain.apply_decision(row, %{})
       assert Domain.get_invocation!(row.id).status == :awaiting_approval
+    end
+  end
+
+  describe "approval binding" do
+    setup do
+      check =
+        CredentialCheck
+        |> Ash.Changeset.for_create(:record, %{licence_number: "RN-#{System.unique_integer()}"})
+        |> Ash.create!()
+
+      %{check: check}
+    end
+
+    defp suspend!(nurse, check), do: invoke!(nurse, @suspend, %{"id" => check.id})
+
+    # Another write to the check, made past the invocation: its version moves on.
+    defp changed!(check) do
+      {1, _} =
+        Repo.update_all(
+          from(c in "credential_checks",
+            where: c.id == type(^check.id, Ecto.UUID),
+            update: [inc: [version_number: 1]]
+          ),
+          []
+        )
+    end
+
+    # Written past the actions, as the clock is.
+    defp past!(row, changes) do
+      {1, _} =
+        Repo.update_all(from(i in "invocations", where: i.id == type(^row.id, Ecto.UUID)),
+          set: changes
+        )
+
+      Domain.get_invocation!(row.id)
+    end
+
+    defp approve!(row, lead),
+      do: Domain.apply_decision!(row, %{outcome: :approved, decided_by_id: lead.id})
+
+    test "a request awaiting approval records what an approval of it binds, in RFC 9396's shape",
+         %{nurse: nurse, check: check} do
+      before = DateTime.utc_now()
+      row = suspend!(nurse, check)
+      assert {row.status, row.approval_mode} == {:awaiting_approval, :four_eyes}
+
+      assert row.authorization_details == [
+               %{
+                 "type" => "urn:ash-agent:action:" <> @suspend,
+                 "actions" => ["suspend"],
+                 "identifier" => check.id,
+                 "target_digest" => row.target_digest,
+                 "args_digest" => row.args_digest,
+                 "preconditions" => [
+                   %{
+                     "resource" => "AshAgent.Test.CredentialCheck",
+                     "id" => check.id,
+                     "version_number" => 1
+                   }
+                 ],
+                 "manifest_digest" => nil
+               }
+             ]
+
+      assert row.approval_digest == AshAgent.Digest.sha256_hex(row.authorization_details)
+
+      assert row.approval_digest ==
+               Approval.digest(Domain.get_invocation!(row.id).authorization_details)
+
+      expected = DateTime.add(before, 1, :day)
+      assert DateTime.diff(row.approval_expires_at, expected, :second) in 0..5
+
+      # A request that needs no approval binds nothing.
+      ready = invoke!(nurse, @record, args())
+
+      assert {ready.authorization_details, ready.approval_digest, ready.approval_expires_at} ==
+               {nil, nil, nil}
+    end
+
+    test "a subject that changed while the approval was pending makes it stale, not ready",
+         %{nurse: nurse, lead: lead, check: check} do
+      row = suspend!(nurse, check)
+      changed!(check)
+
+      stale = approve!(row, lead)
+
+      assert {stale.status, stale.error_code, stale.approved_by_id} ==
+               {:stale, "subject_changed", nil}
+    end
+
+    test "an approval for one version of the subject does not run on another",
+         %{nurse: nurse, lead: lead, check: check} do
+      ready = approve!(suspend!(nurse, check), lead)
+      assert ready.status == :ready
+      changed!(check)
+
+      assert :stale = Domain.execute_invocation!(%{"id" => ready.id}, machinery())
+      assert outcome(ready) == {:stale, nil, "subject_changed"}
+      assert [%{verified?: false, id: id}] = checks(check.licence_number)
+      assert id == check.id
+      assert Domain.get_invocation!(ready.id).attempt_count == 0
+    end
+
+    test "an approval for a target that has since changed is not applied",
+         %{nurse: nurse, lead: lead, check: check} do
+      row = requested_under_earlier_definition(suspend!(nurse, check))
+
+      assert {:stale, "target_changed"} =
+               then(approve!(row, lead), &{&1.status, &1.error_code})
+    end
+
+    test "an expired approval is neither applied nor run", %{
+      nurse: nurse,
+      lead: lead,
+      check: check
+    } do
+      expired = DateTime.add(DateTime.utc_now(), -60, :second)
+
+      pending = past!(suspend!(nurse, check), approval_expires_at: expired)
+
+      assert {:stale, "approval_expired"} =
+               then(approve!(pending, lead), &{&1.status, &1.error_code})
+
+      ready = approve!(suspend!(nurse, check), lead)
+      past!(ready, approval_expires_at: expired)
+      assert :stale = Domain.execute_invocation!(%{"id" => ready.id}, machinery())
+      assert outcome(ready) == {:stale, nil, "approval_expired"}
+    end
+
+    test "details that are not the ones digested do not hold", %{
+      nurse: nurse,
+      lead: lead,
+      check: check
+    } do
+      row = suspend!(nurse, check)
+      [entry] = row.authorization_details
+      row = past!(row, authorization_details: [Map.put(entry, "actions", ["archive"])])
+
+      assert {:stale, "approval_changed"} = then(approve!(row, lead), &{&1.status, &1.error_code})
+    end
+
+    test "an approval that still holds runs, and is checked again at the claim",
+         %{nurse: nurse, lead: lead, check: check} do
+      ready = approve!(suspend!(nurse, check), lead)
+      assert Approval.stale_reason(ready) == nil
+
+      assert :succeeded = Domain.execute_invocation!(%{"id" => ready.id}, machinery())
+      assert {:succeeded, nil, nil} = outcome(ready)
     end
   end
 

@@ -11,8 +11,11 @@ defmodule AshAgent.Invocation.Changes.ApplyDecision do
   arguments, or adds an error when the decision must not apply. The package does not
   know how approvals are made.
 
-    * `:approved`: the row becomes `ready`, records who approved it, and its `:execute`
-      job is enqueued in the same transaction;
+    * `:approved`: if the approval still holds (`AshAgent.Invocation.Approval.stale_reason/2`:
+      not expired, and the digest recomputed from the row, the target as declared now and
+      the preconditions' records as they stand now equals `approval_digest`), the row
+      becomes `ready`, records who approved it, and its `:execute` job is enqueued in the
+      same transaction. Otherwise it becomes `stale`, with the reason as `error_code`;
     * `:rejected`: the row becomes `rejected`, with `failure_class: :rejected`;
     * `:stale`: the row becomes `stale`: what was approved is no longer what would run.
 
@@ -21,7 +24,7 @@ defmodule AshAgent.Invocation.Changes.ApplyDecision do
 
   use Ash.Resource.Change
 
-  alias AshAgent.Invocation.Enqueue
+  alias AshAgent.Invocation.{Approval, Enqueue}
 
   @impl true
   def change(changeset, _opts, _context) do
@@ -33,12 +36,20 @@ defmodule AshAgent.Invocation.Changes.ApplyDecision do
   defp apply_outcome(changeset) do
     case Ash.Changeset.get_argument(changeset, :outcome) do
       :approved ->
-        changeset
-        |> AshStateMachine.transition_state(:ready)
-        |> Ash.Changeset.force_change_attributes(%{
-          approved_by_id: Ash.Changeset.get_argument(changeset, :decided_by_id),
-          next_attempt_at: nil
-        })
+        case Approval.stale_reason(changeset.data, tenant: changeset.tenant) do
+          nil ->
+            changeset
+            |> AshStateMachine.transition_state(:ready)
+            |> Ash.Changeset.force_change_attributes(%{
+              approved_by_id: Ash.Changeset.get_argument(changeset, :decided_by_id),
+              next_attempt_at: nil
+            })
+
+          reason ->
+            changeset
+            |> AshStateMachine.transition_state(:stale)
+            |> Ash.Changeset.force_change_attribute(:error_code, reason)
+        end
 
       :rejected ->
         changeset

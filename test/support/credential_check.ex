@@ -18,6 +18,8 @@ defmodule AshAgent.Test.CredentialCheck do
     * `:refer` hands a referral to the board and returns a dispatch: the outcome comes
       back later. `:refer_keyed` is the idempotent kind.
     * `:confirm_standing` refuses a lapsed licence with a business error.
+    * `:suspend` updates a check after a second person from the credentialing committee
+      approves, within a day: an approval bound to a subject.
     * `:archive` is declared nowhere, so it cannot be invoked.
 
   A check is visible to everyone unless it is `restricted_to` one person, such as a
@@ -87,6 +89,15 @@ defmodule AshAgent.Test.CredentialCheck do
       destructive?: false,
       open_world?: false,
       intent: :execute
+
+    action :suspend,
+      kind: :edit,
+      destructive?: false,
+      open_world?: false,
+      approval: :four_eyes,
+      approver_role: :credentialing_committee,
+      approval_expires_in: [days: 1],
+      intent: :execute
   end
 
   actions do
@@ -107,6 +118,11 @@ defmodule AshAgent.Test.CredentialCheck do
 
     update :archive do
       accept []
+    end
+
+    update :suspend do
+      accept []
+      change set_attribute(:verified?, false)
     end
 
     action :notify_board, :boolean do

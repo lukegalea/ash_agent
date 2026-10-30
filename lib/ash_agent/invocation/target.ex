@@ -116,6 +116,33 @@ defmodule AshAgent.Invocation.Target do
   end
 
   @doc """
+  `preconditions` as their records stand now: each entry with its record's current
+  `version_number`, or `nil` when the record is gone. Read without authorization, in
+  `opts[:tenant]`: the machinery checking what a request depends on, not a person
+  reading.
+  """
+  @spec current_preconditions([map()], keyword()) :: [map()]
+  def current_preconditions(preconditions, opts) do
+    Enum.map(preconditions, fn %{"resource" => name, "id" => id} = precondition ->
+      Map.put(precondition, "version_number", current_version(name, id, opts))
+    end)
+  end
+
+  defp current_version(name, id, opts) do
+    with {:ok, resource} <- resource(name),
+         names = Ash.Resource.Info.primary_key(resource),
+         values = String.split(id, ",", parts: length(names)),
+         {:ok, %{version_number: version}} <-
+           resource
+           |> Ash.Query.do_filter(Enum.zip(names, values))
+           |> Ash.read_one(tenant: opts[:tenant], authorize?: false) do
+      version
+    else
+      _gone -> nil
+    end
+  end
+
+  @doc """
   Runs the target with `args` as `opts[:actor]`, authorized, and returns a JSON-ready
   summary of what it returned, or the `AshAgent.Invocation.Dispatch` it returned when it
   handed the work on. `opts` are passed to the action (`actor`, `tenant`, `context`).

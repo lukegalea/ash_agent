@@ -70,13 +70,18 @@ defmodule AshAgent.Invocation do
       has expired when its target writes only to this application. Takes the next lease
       epoch under `optimistic_lock(:lease_epoch)`, so of two claims from one reading one
       wins. A row whose target is declared differently now from when it was requested
-      (its `target_digest` no longer matches) becomes `stale` instead, and nothing runs.
+      (its `target_digest` no longer matches), or whose approval no longer holds
+      (`AshAgent.Invocation.Approval`), becomes `stale` instead, and nothing runs.
     * `succeed` and `fail` (updates): complete a claimed row, filtered on the epoch the
       worker claimed with. A worker whose lease was taken over matches no row, gets
       `Ash.Error.Changes.StaleRecord`, and its transaction rolls back.
     * `apply_decision` (update): applies an approval's outcome to an `awaiting_approval`
       row: `ready`, `rejected` or `stale`. The outcome arrives as an argument, set by the
-      caller or by a change the host attaches to the action.
+      caller or by a change the host attaches to the action. An approval makes the row
+      ready only while it still binds the request: `request` records what it binds
+      (`authorization_details` and their `approval_digest`, RFC 9396 and RFC 8785) and
+      when it expires, and a changed subject, a changed target or an expired approval
+      makes the row `stale` instead.
     * `request_cancel` (update): cancels a row that has not started; on a row that is
       executing it only records the request.
     * `execute` (generic, no transaction): the `:execute` trigger's action. Claims, builds
