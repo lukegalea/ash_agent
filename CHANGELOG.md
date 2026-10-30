@@ -16,6 +16,13 @@ Nothing has been released yet.
 
 ### Features:
 
+- `AshAgent.Validations.Governed`: a validation that refuses a governed action unless its own invocation is running
+  it. It reads the invocation named in `context.ash_agent` and requires it `executing` under the named lease epoch,
+  for this action, with an `args_digest` matching the inputs given (plus the acted-on record's primary key), and the
+  actor to be the invocation's principal. It has `atomic/3` and is temporal safe; a refusal is
+  `AshAgent.Invocation.Ungoverned` with a `reason`. `AshAgent.ExecutionIdentity` gains a required callback,
+  `principal_of/1`, the inverse of `actor_for/1`, which the validation calls.
+
 - Approvals bind the request they approve. `request` records, for a row awaiting approval, its RFC 9396
   `authorization_details`, their `approval_digest` (SHA-256 of the RFC 8785 canonical JSON) and `approval_expires_at`
   from the declaration's `approval_expires_in` (`AshAgent.Invocation.Approval`). `apply_decision` makes an approved row
