@@ -20,6 +20,8 @@ defmodule AshAgent.Test.CredentialCheck do
     * `:confirm_standing` refuses a lapsed licence with a business error.
     * `:suspend` updates a check after a second person from the credentialing committee
       approves, within a day: an approval bound to a subject.
+    * `:restrict` and `:page_board` are governed (`AshAgent.Validations.Governed`): an
+      update and a generic action that run only through their own invocation.
     * `:archive` is declared nowhere, so it cannot be invoked.
 
   A check is visible to everyone unless it is `restricted_to` one person, such as a
@@ -90,6 +92,15 @@ defmodule AshAgent.Test.CredentialCheck do
       open_world?: false,
       intent: :execute
 
+    action :restrict,
+      kind: :edit,
+      destructive?: false,
+      idempotent?: true,
+      open_world?: false,
+      intent: :execute
+
+    action :page_board, kind: :execute, destructive?: false, intent: :execute
+
     action :suspend,
       kind: :edit,
       destructive?: false,
@@ -123,6 +134,17 @@ defmodule AshAgent.Test.CredentialCheck do
     update :suspend do
       accept []
       change set_attribute(:verified?, false)
+    end
+
+    update :restrict do
+      accept [:restricted_to]
+      validate {AshAgent.Validations.Governed, invocation: AshAgent.Test.Invocation}
+    end
+
+    action :page_board, :boolean do
+      argument :licence_number, :string, allow_nil?: false
+      validate {AshAgent.Validations.Governed, invocation: AshAgent.Test.Invocation}
+      run fn _input, _context -> {:ok, true} end
     end
 
     action :notify_board, :boolean do

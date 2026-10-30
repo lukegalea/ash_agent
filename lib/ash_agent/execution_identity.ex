@@ -6,7 +6,7 @@ defmodule AshAgent.ExecutionIdentity do
   Who an invocation runs as. The host implements it; the package calls it and never
   reads the host's actors, grants or tenants itself.
 
-  Two moments need an answer:
+  Three moments need an answer:
 
     * **When an invocation is requested**, `principal_for/2` names the principal the work
       will execute as, from the actor asking for it. The answer is stored on the row as
@@ -17,6 +17,9 @@ defmodule AshAgent.ExecutionIdentity do
       the host's grants as they are then, never from what the requester could do when
       they asked. A principal that no longer has authority is an `{:error, reason}`, and
       the invocation fails as denied without running its target.
+    * **When a governed target runs**, `principal_of/1` names the principal an actor
+      built by `actor_for/1` runs as, so `AshAgent.Validations.Governed` can check that
+      the target runs as its invocation's principal and not as someone else.
 
   ## Principals
 
@@ -69,6 +72,14 @@ defmodule AshAgent.ExecutionIdentity do
   The actor to run `invocation`'s target as, built afresh from its `executing_principal`.
   """
   @callback actor_for(invocation :: Ash.Resource.record()) :: {:ok, term()} | {:error, term()}
+
+  @doc """
+  The principal `actor` runs as, when it is an actor `actor_for/1` builds: the inverse of
+  `actor_for/1`, read from the actor alone, without querying. `:error` for any other
+  actor. `AshAgent.Validations.Governed` calls it to check that a governed action runs
+  as its invocation's principal.
+  """
+  @callback principal_of(actor :: term()) :: {:ok, principal()} | :error
 
   @doc """
   The principal as RFC 8693 delegation (section 4.1, the `act` claim), or `nil` for a

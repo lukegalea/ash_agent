@@ -7,10 +7,11 @@ defmodule AshAgent.Test.ExecutionIdentity do
 
   A person is a map with an `:id`, and runs as themselves. An automation is a map with
   an `:automation` name, the person it acts `:for` (a person map, or nil) and an
-  `:agent`; it runs as an actor carrying both names. A name in `revoke/1`'s list has
-  lost its authority, so `actor_for/1` refuses it, the way a host refuses a principal
-  whose grant was revoked. An automation is refused when either it or the person it acts
-  for has lost theirs, since what both allow is then nothing.
+  `:agent`; it runs as an actor carrying both names and the agent, which
+  `principal_of/1` reads back. A name in `revoke/1`'s list has lost its authority, so
+  `actor_for/1` refuses it, the way a host refuses a principal whose grant was revoked.
+  An automation is refused when either it or the person it acts for has lost theirs,
+  since what both allow is then nothing.
   """
 
   @behaviour AshAgent.ExecutionIdentity
@@ -34,15 +35,22 @@ defmodule AshAgent.Test.ExecutionIdentity do
   @impl true
   def actor_for(%{executing_principal: principal}) do
     case AshAgent.ExecutionIdentity.identity(principal) do
-      {"automation", name, person, _agent} ->
+      {"automation", name, person, agent} ->
         if Enum.any?([name, person], &revoked?/1),
           do: {:error, :revoked},
-          else: {:ok, %{id: person, automation: name}}
+          else: {:ok, %{id: person, automation: name, agent: agent}}
 
       {_person, id, _on_behalf_of, _agent} ->
         if revoked?(id), do: {:error, :revoked}, else: {:ok, %{id: id}}
     end
   end
+
+  @impl true
+  def principal_of(%{automation: name, id: person} = actor) when is_binary(name),
+    do: {:ok, %{type: :automation, id: name, on_behalf_of: person, agent: actor[:agent]}}
+
+  def principal_of(%{id: id}) when is_binary(id), do: {:ok, %{type: :person, id: id}}
+  def principal_of(_actor), do: :error
 
   @doc "Marks `name` as having lost its authority, until `restore/0`."
   def revoke(name), do: :persistent_term.put(@key, [name | :persistent_term.get(@key, [])])
