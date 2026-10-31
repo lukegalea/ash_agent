@@ -16,6 +16,13 @@ Nothing has been released yet.
 
 ### Features:
 
+- `AshAgent.AgentVersion`, a fragment for immutable, numbered agent versions that a run pins (`draft → published →
+  retired`), and `AshAgent.Agent`, the declaration of an agent in code. `register_from_code` syncs a declaration and
+  writes a new draft only when its content hash changed; a changed tool changes the hash. `apply_publish` refuses a
+  toolset target without an effects declaration, one that changed since the draft was written, or a missing limit, and
+  records who runs act as (the requester by default, or a named automation principal; `requesterless` only with one).
+  `AshAgent.AgentVersion.Definition.check_pinned/1` fails a pinned version whose tools drifted with
+  `AshAgent.AgentVersion.DefinitionDrift` (`:definition_drift`).
 - An attempt that may have reached outside is never ended as though nothing ran. A row an earlier attempt of which
   may have reached an outside target becomes `outcome_unknown`, for reconciliation, where it would have gone `stale`
   at claim (including through a host's change calling `AshAgent.Invocation.Changes.Claim.stale/2`), been cancelled

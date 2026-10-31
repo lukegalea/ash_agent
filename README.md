@@ -8,7 +8,8 @@ SPDX-License-Identifier: MIT
 Governed invocations and durable agent runs for [Ash Framework](https://ash-hq.org) hosts.
 
 > **Status: early.** The effects declaration (`AshAgent.Effects`) and the invocation fragment (`AshAgent.Invocation`)
-> with its two host behaviours, typed failure and reconciliation are built. Durable agent runs are not built yet. [`usage-rules.md`](usage-rules.md) says
+> with its two host behaviours, typed failure and reconciliation are built, and so are agent versions
+> (`AshAgent.AgentVersion`, declared in code with `AshAgent.Agent`). Durable agent runs are not built yet. [`usage-rules.md`](usage-rules.md) says
 > which parts have landed.
 
 ## What it is for
