@@ -24,6 +24,9 @@ defmodule AshAgent.Test.CredentialCheck do
       update and a generic action that run only through their own invocation.
     * `:archive` is declared nowhere, so it cannot be invoked.
 
+  `:read` is declared read-only and writes nowhere outside, so an agent run reads checks
+  inside its tool loop.
+
   A check is visible to everyone unless it is `restricted_to` one person, such as a
   check still under review: then only that person reads it.
   """
@@ -42,6 +45,14 @@ defmodule AshAgent.Test.CredentialCheck do
   end
 
   effects do
+    action :read,
+      kind: :read,
+      read_only?: true,
+      destructive?: false,
+      idempotent?: true,
+      open_world?: false,
+      intent: :inspect
+
     action :record,
       kind: :edit,
       destructive?: false,

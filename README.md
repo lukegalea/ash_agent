@@ -9,8 +9,8 @@ Governed invocations and durable agent runs for [Ash Framework](https://ash-hq.o
 
 > **Status: early.** The effects declaration (`AshAgent.Effects`) and the invocation fragment (`AshAgent.Invocation`)
 > with its two host behaviours, typed failure and reconciliation are built, and so are agent versions
-> (`AshAgent.AgentVersion`, declared in code with `AshAgent.Agent`). Durable agent runs are not built yet. [`usage-rules.md`](usage-rules.md) says
-> which parts have landed.
+> (`AshAgent.AgentVersion`, declared in code with `AshAgent.Agent`) and durable agent runs (`AshAgent.Run` and
+> `AshAgent.Step`). [`usage-rules.md`](usage-rules.md) says which parts have landed.
 
 ## What it is for
 
@@ -38,8 +38,9 @@ its own resources and supplies everything that depends on the application:
 - policies;
 - ash_oban triggers, and therefore the workers, queues and schedules;
 - audit and encryption at rest;
-- implementations of the package's behaviours: who an invocation executes as and the key its argument digest is
-  taken under; later, how an approval is opened and read, and where execution history comes from.
+- implementations of the package's behaviours: who an invocation or a run executes as, the key an argument digest is
+  taken under, and how a run's step reaches a model; later, how an approval is opened and read, and where execution
+  history comes from.
 
 See [What the host supplies](documentation/topics/what-the-host-supplies.md).
 
@@ -61,7 +62,8 @@ time.
 
 ## Dependencies and boundary
 
-The package depends on `ash`, `spark`, `ash_ai`, `ash_state_machine` and `ash_oban`. It never references Phoenix, and
+The package depends on `ash`, `spark`, `ash_ai`, `req_llm` (the model client ash_ai's tool loop drives),
+`ash_state_machine` and `ash_oban`. It never references Phoenix, and
 CI fails if any code in `lib/` does, or if a Phoenix package reaches the dependency tree by a path other than the one
 `ash_ai` brings in. See [The boundary](documentation/topics/the-boundary.md).
 

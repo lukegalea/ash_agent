@@ -47,6 +47,20 @@ defmodule AshAgent.Test.Domain do
       define :list_agent_versions, action: :read
     end
 
+    resource AshAgent.Test.Run do
+      define :start_run, action: :start, args: [:agent, :input]
+      define :get_run, action: :read, get_by: [:id]
+      define :claim_step, action: :claim_step
+      define :record_step, action: :record_step
+      define :recover_run, action: :recover
+      define :request_run_cancel, action: :request_cancel
+      define :step_run, action: :step, args: [:primary_key]
+    end
+
+    resource AshAgent.Test.Step do
+      define :list_steps, action: :read
+    end
+
     resource AshAgent.Test.Spike.ReferralJob do
       define :enqueue_referral, action: :enqueue, args: [:label]
       define :claim_referral, action: :claim
