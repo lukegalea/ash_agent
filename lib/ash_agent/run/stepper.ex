@@ -485,7 +485,9 @@ defmodule AshAgent.Run.Stepper do
   defp lost?(%Ash.Error.Changes.StaleRecord{}), do: true
 
   defp lost?(%Ash.Error.Changes.InvalidAttribute{field: field})
-       when field in [:status, :blocked_on], do: true
+       when field in [:status, :blocked_on] do
+    true
+  end
 
   defp lost?(%{errors: errors}) when is_list(errors), do: Enum.any?(errors, &lost?/1)
   defp lost?(_error), do: false
