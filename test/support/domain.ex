@@ -36,6 +36,17 @@ defmodule AshAgent.Test.Domain do
       define :retry_invocation, action: :retry
     end
 
+    resource AshAgent.Test.AgentVersion do
+      define :register_agent, action: :register_from_code, args: [:agent]
+      define :create_agent_draft, action: :create_draft
+      define :revise_agent_draft, action: :revise_draft
+      define :publish_agent_version, action: :apply_publish
+      define :retire_agent_version, action: :retire
+      define :get_agent_version, action: :read, get_by: [:id]
+      define :latest_published_agent_version, action: :latest_published, args: [:key]
+      define :list_agent_versions, action: :read
+    end
+
     resource AshAgent.Test.Spike.ReferralJob do
       define :enqueue_referral, action: :enqueue, args: [:label]
       define :claim_referral, action: :claim
