@@ -6,7 +6,13 @@ defmodule AshAgent.ExecutionIdentity do
   Who an invocation runs as. The host implements it; the package calls it and never
   reads the host's actors, grants or tenants itself.
 
-  Three moments need an answer:
+  Three moments need an answer for an invocation. An agent run (`AshAgent.Run`) adds
+  two, which a host using runs answers with the optional callbacks: `run_principal/3`
+  (who may start an agent, and as whom its run executes) and `requester_for/1` (who asks
+  for a run's tool calls). At every step of a run, `actor_for/1` is called with the run
+  row, as it is at every claim of an invocation.
+
+  The three for an invocation:
 
     * **When an invocation is requested**, `principal_for/2` names the principal the work
       will execute as, from the actor asking for it. The answer is stored on the row as
@@ -80,6 +86,30 @@ defmodule AshAgent.ExecutionIdentity do
   as its invocation's principal.
   """
   @callback principal_of(actor :: term()) :: {:ok, principal()} | :error
+
+  @doc """
+  The principal a run of `agent_version` started by `actor` executes as, or why `actor`
+  may not start it. Called by `AshAgent.Run`'s `start`. The host decides who may start
+  which agent (a start grant per agent key, say) and reads the version's publish-time
+  `authority`: the requester runs as themselves, unless the publisher named an
+  automation principal to act for them. Only a host whose resources use `AshAgent.Run`
+  implements it.
+  """
+  @callback run_principal(
+              actor :: term(),
+              agent_version :: Ash.Resource.record(),
+              context :: map()
+            ) :: {:ok, principal()} | {:error, term()}
+
+  @doc """
+  The actor that requests a run's tool calls through `invoke`: the person who started
+  `run`, built afresh, in the form `principal_for/2` maps to the run's
+  `executing_principal`, so each invocation runs as the run does. An `{:error, reason}`
+  fails the run as denied. Only a host whose resources use `AshAgent.Run` implements it.
+  """
+  @callback requester_for(run :: Ash.Resource.record()) :: {:ok, term()} | {:error, term()}
+
+  @optional_callbacks run_principal: 3, requester_for: 1
 
   @doc """
   The principal as RFC 8693 delegation (section 4.1, the `act` claim), or `nil` for a

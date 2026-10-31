@@ -67,6 +67,9 @@ defmodule AshAgent.MixProject do
       {:ash_ai, "~> 1.3"},
       {:ash_state_machine, "~> 0.2"},
       {:ash_oban, "~> 0.9"},
+      # The model client ash_ai's tool loop drives. ash_ai declares it optional; an
+      # agent run's step calls the loop, so this package needs it.
+      {:req_llm, "~> 1.28"},
       # RFC 8785 canonical JSON, for digests of arguments and of a target's
       # declaration that must not depend on key order.
       {:jcs, "~> 0.2"},

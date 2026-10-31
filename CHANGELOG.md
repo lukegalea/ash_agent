@@ -16,6 +16,21 @@ Nothing has been released yet.
 
 ### Features:
 
+- Durable agent runs: `AshAgent.Run`, a fragment for a run of a pinned agent version, and `AshAgent.Step`, its
+  append-only journal (one row per message). One `:step` job is one model call: `claim_step` takes the lease under
+  `optimistic_lock(:lease_epoch)` (and checks the deadline, drift, the step and tool-call limits and the token
+  budget), the model is called through ash_ai's tool loop with no transaction open, and each message the loop emits is
+  recorded under the fence (`record_step`, filtered on the epoch and the journal's `step_seq`). Only Ash `:read`
+  actions that do not reach outside run in the loop; every other tool call becomes an invocation keyed
+  `run:<run id>:<step seq>:<tool call id>`, and a step repeated after a worker died reads its recorded result. An
+  answer is cast to the version's `output_type`, with up to `max_repairs` repair turns, then `failed(:rejected)`.
+  `request_cancel` cancels a run and its unstarted invocations. `needs_step` is a derived calculation over the host's
+  invocation resource; `AshAgent.Run.Changes.Wake` wakes a run when one of its invocations finishes. New host
+  behaviour `AshAgent.Runtime` (the model and transport a step uses) and optional `AshAgent.ExecutionIdentity`
+  callbacks `run_principal/3` (who may start which agent, and as whom it runs) and `requester_for/1` (who requests a
+  run's tool calls). `req_llm` is now a dependency.
+- `AshAgent.AgentVersion.Definition.publish_problems/1` also refuses an `output_type` that names no Ash type, and two
+  toolset targets that would be offered under the same tool name.
 - `AshAgent.AgentVersion`, a fragment for immutable, numbered agent versions that a run pins (`draft → published →
   retired`), and `AshAgent.Agent`, the declaration of an agent in code. `register_from_code` syncs a declaration and
   writes a new draft only when its content hash changed; a changed tool changes the hash. `apply_publish` refuses a

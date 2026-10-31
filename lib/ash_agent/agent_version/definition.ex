@@ -55,10 +55,16 @@ defmodule AshAgent.AgentVersion.Definition do
       target that changed since needs the draft revised, so the version records what
       it now offers.
     * Every limit is set.
+    * `output_type` names an Ash type (`AshAgent.Run.Output.type/1`), so a run can cast
+      its answer.
+    * No two toolset targets share a tool name (`AshAgent.Run.Toolset.tool_name/2`),
+      so the model can tell them apart.
   """
   @spec publish_problems(map()) :: [String.t()]
   def publish_problems(version) do
-    Enum.flat_map(version.toolset || [], &target_problems/1) ++ limit_problems(version.limits)
+    Enum.flat_map(version.toolset || [], &target_problems/1) ++
+      limit_problems(version.limits) ++
+      output_problems(version) ++ name_problems(version.toolset || [])
   end
 
   @doc """
@@ -124,6 +130,34 @@ defmodule AshAgent.AgentVersion.Definition do
     limits = stringify_entry(limits || %{})
 
     for limit <- @limits, is_nil(limits[limit]), do: "limits: #{limit} is not set"
+  end
+
+  defp output_problems(version) do
+    case AshAgent.Run.Output.type(version.output_type) do
+      {:ok, _type} -> []
+      {:error, message} -> [message]
+    end
+  end
+
+  defp name_problems(toolset) do
+    toolset
+    |> Enum.flat_map(fn entry ->
+      case Target.resolve(target_name(entry)) do
+        {:ok, target} ->
+          [
+            {AshAgent.Run.Toolset.tool_name(target.resource, target.action.name),
+             target_name(entry)}
+          ]
+
+        {:error, _unresolvable} ->
+          []
+      end
+    end)
+    |> Enum.group_by(&elem(&1, 0), &elem(&1, 1))
+    |> Enum.filter(fn {_name, targets} -> length(targets) > 1 end)
+    |> Enum.map(fn {name, targets} ->
+      "toolset: #{Enum.join(targets, " and ")} would both be offered as #{name}"
+    end)
   end
 
   defp current_digest(name) when is_binary(name) do
