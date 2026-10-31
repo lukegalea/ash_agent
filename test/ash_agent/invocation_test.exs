@@ -387,6 +387,25 @@ defmodule AshAgent.InvocationTest do
       assert Domain.get_invocation!(ready.id).attempt_count == 0
     end
 
+    test "a subject changed after the claim, before the target reads it, does not run",
+         %{nurse: nurse, lead: lead, check: check} do
+      {1, _} =
+        Repo.update_all(
+          from(c in "credential_checks", where: c.id == type(^check.id, Ecto.UUID)),
+          set: [verified?: true]
+        )
+
+      ready = approve!(suspend!(nurse, check), lead)
+      {:ok, claimed} = Executor.claim(ready, machinery())
+
+      # A concurrent edit commits between the claim and the run.
+      changed!(check)
+
+      assert {:ok, :stale} = Executor.run_claimed(claimed, machinery())
+      assert outcome(ready) == {:stale, nil, "subject_changed"}
+      assert [%{verified?: true}] = checks(check.licence_number)
+    end
+
     test "an approval for a target that has since changed is not applied",
          %{nurse: nurse, lead: lead, check: check} do
       row = requested_under_earlier_definition(suspend!(nurse, check))
@@ -577,12 +596,17 @@ defmodule AshAgent.InvocationTest do
       # second time while A is still in its call.
       requested_under_earlier_definition(a, %{"open_world" => false})
 
-      assert {:error, :stale} = Executor.claim(Domain.get_invocation!(row.id), machinery())
-      assert Domain.get_invocation!(row.id).status == :stale
+      # B does not call out. Nor does it call the row stale, as though nothing ran: A's
+      # attempt, under the declaration as it is now, may have reached outside.
+      assert {:error, :outcome_unknown} =
+               Executor.claim(Domain.get_invocation!(row.id), machinery())
+
+      assert %{status: :outcome_unknown, error_code: "target_changed"} =
+               Domain.get_invocation!(row.id)
 
       # A finishes its call, and its completion is refused.
       assert {:ok, :superseded} = Executor.run_claimed(a, machinery())
-      assert Domain.get_invocation!(row.id).status == :stale
+      assert Domain.get_invocation!(row.id).status == :outcome_unknown
     end
   end
 

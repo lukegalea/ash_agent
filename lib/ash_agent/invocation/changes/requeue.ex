@@ -13,11 +13,14 @@ defmodule AshAgent.Invocation.Changes.Requeue do
   its transaction; for an idempotent one, the outside service deduplicates a second call
   by the invocation key. Any other row's effect may have happened, and only
   `mark_outcome_unknown` and reconciliation may settle it.
+
+  Refused, too, once the row has used its attempts (`attempt_count` at the host's
+  `max_attempts`): a worker that dies every time is not run forever.
   """
 
   use Ash.Resource.Change
 
-  alias AshAgent.Invocation.{Enqueue, Failure}
+  alias AshAgent.Invocation.{Enqueue, Failure, Info}
 
   @impl true
   def change(changeset, _opts, _context) do
@@ -35,6 +38,12 @@ defmodule AshAgent.Invocation.Changes.Requeue do
           field: :effects,
           message:
             "running this target again could repeat an outside effect; reconcile it instead"
+        )
+
+      data.attempt_count >= Info.max_attempts(changeset.resource) ->
+        Ash.Changeset.add_error(changeset,
+          field: :attempt_count,
+          message: "the row has used its attempts; reconcile it instead"
         )
 
       true ->

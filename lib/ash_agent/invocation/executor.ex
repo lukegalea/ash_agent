@@ -36,7 +36,16 @@ defmodule AshAgent.Invocation.Executor do
        `max_attempts`; one whose effect is in doubt on an outside target that is not
        idempotent makes it `outcome_unknown`; anything else fails it with its class.
        A subject the executing actor can no longer reach is `:denied`; one that is gone
-       is `:rejected`.
+       is `:rejected`. An outside target that had started is classified with
+       `AshAgent.Invocation.Failure.classify_started/1`: an error the host did not
+       classify, or a raise, leaves its effect in doubt.
+    5. An approved row's subject is compared, on the record the target is about to
+       write, with the version the approval bound: another version makes the row
+       `stale`, and nothing runs.
+    6. A row an earlier attempt of which may have reached outside never ends as though
+       nothing ran: where this attempt ends before its target runs (no authority, a
+       target that no longer resolves, a subject out of reach or changed), it becomes
+       `outcome_unknown` for reconciliation.
 
   Every function returns `{:ok, outcome}` with `outcome` one of `outcomes/0`: `:succeeded`,
   `:failed`, `:deferred` (ready again after a backoff), `:dispatched`,
@@ -48,6 +57,7 @@ defmodule AshAgent.Invocation.Executor do
   """
 
   require Ash.Query
+  require Logger
 
   alias AshAgent.Invocation.{Changes.Claim, Dispatch, Failure, Info, LeaseLost, Target}
 
@@ -88,6 +98,7 @@ defmodule AshAgent.Invocation.Executor do
           {:ok, claimed} -> run_claimed(claimed, opts)
           {:error, :not_claimable} -> {:ok, :skipped}
           {:error, :stale} -> {:ok, :stale}
+          {:error, :outcome_unknown} -> {:ok, :outcome_unknown}
           {:error, error} -> {:error, error}
         end
 
@@ -99,24 +110,43 @@ defmodule AshAgent.Invocation.Executor do
   @doc """
   Claims `row`. `claim_opts` may set `:lease_for` in milliseconds.
 
-  `{:error, :not_claimable}` when the row is not ready and holds no expired lease, or
-  when another claim took it first. `{:error, :stale}` when its target is declared
-  differently now from when it was requested, or its approval no longer holds: the claim
-  has made the row `stale`, and it must not run.
+  The claimed row carries, in its metadata (`:lease_token`), a secret made for this
+  claim: only its digest is stored on the row, and `context/1` hands it to the target,
+  so a governed target (`AshAgent.Validations.Governed`) runs for this executor and for
+  no caller who merely knows the row.
+
+  `{:error, :not_claimable}` when the row is not ready and holds no expired lease it may
+  take over, or when another claim took it first. `{:error, :stale}` when its target is
+  declared differently now from when it was requested, or its approval no longer holds:
+  the claim has made the row `stale`, and it must not run. `{:error, :outcome_unknown}`
+  when the same is found of a row an earlier attempt of which may have reached outside:
+  the claim has left it for reconciliation.
   """
   @spec claim(Ash.Resource.record(), keyword(), keyword()) ::
-          {:ok, Ash.Resource.record()} | {:error, :not_claimable | :stale | term()}
+          {:ok, Ash.Resource.record()}
+          | {:error, :not_claimable | :stale | :outcome_unknown | term()}
   def claim(row, opts, claim_opts \\ []) do
     if Claim.claimable?(row, DateTime.utc_now()) do
+      token = Base.url_encode64(:crypto.strong_rand_bytes(32), padding: false)
+
+      input =
+        claim_opts
+        |> Keyword.take([:lease_for])
+        |> Map.new()
+        |> Map.put(:lease_token_digest, token_digest(token))
+
       row
-      |> Ash.Changeset.for_update(:claim, Map.new(Keyword.take(claim_opts, [:lease_for])), opts)
+      |> Ash.Changeset.for_update(:claim, input, opts)
       |> Ash.update()
       |> case do
         {:ok, %{status: :stale}} ->
           {:error, :stale}
 
+        {:ok, %{status: :outcome_unknown}} ->
+          {:error, :outcome_unknown}
+
         {:ok, claimed} ->
-          {:ok, claimed}
+          {:ok, Ash.Resource.put_metadata(claimed, :lease_token, token)}
 
         {:error, error} ->
           if lost_claim?(error), do: {:error, :not_claimable}, else: {:error, error}
@@ -135,11 +165,11 @@ defmodule AshAgent.Invocation.Executor do
       {:ok, target} ->
         case Info.execution_identity(resource).actor_for(claimed) do
           {:ok, actor} -> run_as(claimed, target, actor, opts)
-          {:error, reason} -> record_failure(claimed, {:denied, no_authority(reason)}, opts)
+          {:error, reason} -> not_run(claimed, {:denied, no_authority(reason)}, opts)
         end
 
       {:error, _message} ->
-        record_failure(claimed, {:permanent, "target_unavailable"}, opts)
+        not_run(claimed, {:permanent, "target_unavailable"}, opts)
     end
   end
 
@@ -149,16 +179,22 @@ defmodule AshAgent.Invocation.Executor do
     target_opts = [
       actor: actor,
       tenant: opts[:tenant],
-      context: %{ash_agent: context(claimed)}
+      context: %{ash_agent: context(claimed)},
+      preconditions: approved_preconditions(claimed)
     ]
 
     if target.effect.open_world? do
-      case Target.run(target, args, target_opts) do
+      case run_outside(target, args, target_opts) do
         {:ok, value} -> complete(claimed, completion(value), opts)
-        {:error, error} -> record_failure(claimed, Failure.classify(error), opts)
+        {:not_run, reason} -> not_run(claimed, reason, opts)
+        {:error, :raised} -> record_failure(claimed, {:indeterminate, "raised"}, opts)
+        {:error, error} -> record_failure(claimed, Failure.classify_started(error), opts)
       end
     else
       case run_with_completion(claimed, target, args, target_opts, opts) do
+        {:ok, {:not_run, reason}} ->
+          not_run(claimed, reason, opts)
+
         {:ok, outcome} ->
           {:ok, outcome}
 
@@ -170,16 +206,47 @@ defmodule AshAgent.Invocation.Executor do
     end
   end
 
+  # An outside target that raises is recorded like an error once it started: its effect
+  # may have happened, and a raise left alone would leave the row to its lease and run
+  # it again at every expiry.
+  defp run_outside(target, args, target_opts) do
+    Target.run(target, args, target_opts)
+  rescue
+    error ->
+      Logger.error(
+        "invocation target #{Target.name(target.resource, target.action.name)} raised: " <>
+          Exception.format(:error, error, __STACKTRACE__)
+      )
+
+      {:error, :raised}
+  end
+
+  # The preconditions an approval bound, which the target's subject must still match
+  # when the target reads it; none for a row that needed no approval.
+  defp approved_preconditions(%{approval_mode: :none}), do: []
+  defp approved_preconditions(claimed), do: claimed.preconditions || []
+
   @doc false
-  # What a target and its lookup see of the invocation, under `context.ash_agent`.
+  # What a target and its lookup see of the invocation, under `context.ash_agent`. A row
+  # this executor claimed adds the claim's secret, `lease_token`.
   @spec context(Ash.Resource.record()) :: map()
   def context(invocation) do
-    %{
+    base = %{
       invocation_id: invocation.id,
       invocation_key: invocation.invocation_key,
       lease_epoch: invocation.lease_epoch
     }
+
+    case invocation.__metadata__[:lease_token] do
+      token when is_binary(token) -> Map.put(base, :lease_token, token)
+      _none -> base
+    end
   end
+
+  @doc false
+  # The digest stored for a claim's secret: SHA-256, lowercase hex.
+  @spec token_digest(String.t()) :: String.t()
+  def token_digest(token), do: Base.encode16(:crypto.hash(:sha256, token), case: :lower)
 
   # The target's effect and its completion in one transaction. An exception in the
   # target rolls it back like an error does; it is recorded rather than left for the
@@ -197,6 +264,32 @@ defmodule AshAgent.Invocation.Executor do
   rescue
     error -> {:error, Ash.Error.to_ash_error(error, __STACKTRACE__)}
   end
+
+  # The attempt ended before its target ran. A row an earlier attempt of which may have
+  # reached outside does not end as though nothing ran: it is left for reconciliation.
+  # Otherwise a subject changed since its approval makes it stale, and anything else is
+  # recorded as the failure it is.
+  defp not_run(claimed, reason, opts) do
+    {class, code} = classified = not_run_class(reason)
+
+    cond do
+      Failure.attempted_outside?(claimed, claimed.attempt_count - 1) ->
+        complete(claimed, {:mark_outcome_unknown, %{error_code: code}, :outcome_unknown}, opts)
+
+      class == :stale ->
+        complete(claimed, {:mark_stale, %{error_code: code}, :stale}, opts)
+
+      true ->
+        record_failure(claimed, classified, opts)
+    end
+  end
+
+  defp not_run_class(:subject_changed), do: {:stale, "subject_changed"}
+
+  defp not_run_class({class, code} = classified) when is_atom(class) and is_binary(code),
+    do: classified
+
+  defp not_run_class(error), do: Failure.classify(error)
 
   defp completion(%Dispatch{} = dispatch) do
     {:dispatch,

@@ -5,6 +5,8 @@ defmodule AshAgent.Validations.GovernedTest do
   @moduledoc false
   use AshAgent.DataCase, async: false
 
+  import Ecto.Query, only: [from: 2]
+
   alias AshAgent.Invocation.{Executor, Ungoverned}
   alias AshAgent.Test.{CredentialCheck, Domain}
   alias AshAgent.Validations.Governed
@@ -146,6 +148,43 @@ defmodule AshAgent.Validations.GovernedTest do
       claimed = claimed!(invoke!(nurse, @verify, %{"id" => check.id}))
 
       assert :other_target = refusal(restrict(check, nurse.id, nurse, context(claimed)))
+    end
+
+    test "the principal itself is refused with a context it wrote: only the executor's claim runs it",
+         %{nurse: nurse, check: check} do
+      claimed =
+        claimed!(invoke!(nurse, @restrict, %{"id" => check.id, "restricted_to" => nurse.id}))
+
+      # Everything but the claim's token is known to the requester: the row's id, its key,
+      # the epoch (a small counter) and its own arguments.
+      written = %{
+        ash_agent: %{
+          invocation_id: claimed.id,
+          invocation_key: claimed.invocation_key,
+          lease_epoch: claimed.lease_epoch
+        }
+      }
+
+      assert :not_executor = refusal(restrict(check, nurse.id, nurse, written))
+
+      guessed = put_in(written, [:ash_agent, :lease_token], "guessed")
+      assert :not_executor = refusal(restrict(check, nurse.id, nurse, guessed))
+
+      # A token from an earlier claim of the row does not carry over to the next one.
+      earlier = %{ash_agent: Executor.context(claimed)}
+
+      {1, _} =
+        Repo.update_all(
+          from(i in "invocations", where: i.id == type(^claimed.id, Ecto.UUID)),
+          set: [lease_expires_at: DateTime.add(DateTime.utc_now(), -60, :second)]
+        )
+
+      {:ok, again} = Executor.claim(Domain.get_invocation!(claimed.id), machinery())
+      stale_token = put_in(earlier, [:ash_agent, :lease_epoch], again.lease_epoch)
+      assert :not_executor = refusal(restrict(check, nurse.id, nurse, stale_token))
+
+      assert restricted_to(check) == nil
+      assert {:ok, _} = restrict(check, nurse.id, nurse, context(again))
     end
 
     test "another actor is refused, even with the invocation's context and arguments", %{

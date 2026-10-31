@@ -15,7 +15,11 @@ defmodule AshAgent.Test.Board do
       caller cannot tell;
     * `:busy`: it refuses before taking anything (`:rate_limited`);
     * `:refuse`: it refuses for good (`:refused`);
-    * `:over_budget`: the caller's budget for it is spent (`:over_budget`).
+    * `:over_budget`: the caller's budget for it is spent (`:over_budget`);
+    * `:accept_then_stale`: it takes the notice, and the caller's own write afterwards
+      loses a race (`Ash.Error.Changes.StaleRecord`, an invalid-class error the board
+      knows nothing about);
+    * `:accept_then_raise`: it takes the notice, and the caller then raises.
 
   A notice sent with a key it has seen is not taken twice: the board deduplicates by the
   key, as an idempotent outside service does.
@@ -52,11 +56,17 @@ defmodule AshAgent.Test.Board do
       mode ->
         :ets.insert_new(@table, {{:notice, key}, licence})
 
-        if mode == :accept_then_lose,
-          do: {:error, Error.exception(reason: :timeout)},
-          else: {:ok, %{"ref" => key}}
+        answer(mode, key)
     end
   end
+
+  defp answer(:accept_then_lose, _key), do: {:error, Error.exception(reason: :timeout)}
+
+  defp answer(:accept_then_stale, _key),
+    do: {:error, Ash.Error.Changes.StaleRecord.exception(resource: __MODULE__, filter: %{})}
+
+  defp answer(:accept_then_raise, _key), do: raise("the caller fell over after the board")
+  defp answer(_accept, key), do: {:ok, %{"ref" => key}}
 
   @doc "The notice under `key`, as the board's lookup answers it."
   def find(key) do

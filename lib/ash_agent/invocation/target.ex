@@ -52,6 +52,15 @@ defmodule AshAgent.Invocation.Target do
 
   def resolve(name), do: {:error, "#{inspect(name)} is not a target name"}
 
+  @doc "Whether the target `name` names reaches outside: false only when it resolves and declares `open_world?: false`."
+  @spec outside?(String.t()) :: boolean()
+  def outside?(name) do
+    case resolve(name) do
+      {:ok, %{effect: effect}} -> effect.open_world? != false
+      {:error, _unresolvable} -> false
+    end
+  end
+
   @doc "The target name of `action` on `resource`."
   @spec name(Ash.Resource.t(), atom()) :: String.t()
   def name(resource, action), do: "#{inspect(resource)}.#{action}"
@@ -145,20 +154,33 @@ defmodule AshAgent.Invocation.Target do
   @doc """
   Runs the target with `args` as `opts[:actor]`, authorized, and returns a JSON-ready
   summary of what it returned, or the `AshAgent.Invocation.Dispatch` it returned when it
-  handed the work on. `opts` are passed to the action (`actor`, `tenant`, `context`).
+  handed the work on. `opts` are passed to the action (`actor`, `tenant`, `context`),
+  except `:preconditions`.
+
+  `{:not_run, reason}` when it refused before the action started, so nothing it does
+  happened: the inputs do not build a valid action (`reason` is the error), the subject
+  is gone or out of the actor's reach (as `reach/3` says), or, when `opts[:preconditions]`
+  names the subject, the subject as read here has another `version_number` than the
+  precondition captured (`:subject_changed`). That comparison is made on the very record
+  the action then writes, so a host whose updates carry `optimistic_lock(:version_number)`
+  writes only the version that was approved. `{:error, error}` is an error from the
+  action once it started.
   """
-  @spec run(t(), map(), keyword()) :: {:ok, map() | Dispatch.t()} | {:error, term()}
+  @spec run(t(), map(), keyword()) ::
+          {:ok, map() | Dispatch.t()} | {:not_run, term()} | {:error, term()}
   def run(%{resource: resource, action: action}, args, opts) do
     args = Map.new(args, fn {key, value} -> {to_string(key), value} end)
     {pk, inputs} = Map.split(args, primary_key_names(resource, action))
+    {preconditions, opts} = Keyword.pop(opts, :preconditions, [])
     opts = Keyword.put(opts, :authorize?, true)
 
     resource
-    |> run_action(action, pk, inputs, opts)
+    |> run_action(action, pk, inputs, Keyword.put(opts, :preconditions, preconditions))
     |> case do
       {:ok, %Dispatch{} = dispatch} -> {:ok, dispatch}
       {:ok, value} -> {:ok, summarize(value)}
       :ok -> {:ok, %{}}
+      {:not_run, reason} -> {:not_run, reason}
       {:error, error} -> {:error, error}
     end
   end
@@ -255,30 +277,76 @@ defmodule AshAgent.Invocation.Target do
   defp string(value), do: to_string(value)
 
   defp run_action(resource, %{type: :create, name: name}, _pk, inputs, opts) do
-    resource |> Ash.Changeset.for_create(name, inputs, opts) |> Ash.create()
+    resource |> Ash.Changeset.for_create(name, inputs, action_opts(opts)) |> start(&Ash.create/1)
   end
 
   defp run_action(resource, %{type: :update, name: name}, pk, inputs, opts) do
-    with {:ok, record} <- reach(resource, pk, opts) do
-      record |> Ash.Changeset.for_update(name, inputs, opts) |> Ash.update()
+    with {:ok, record} <- subject_as_approved(resource, pk, opts) do
+      record
+      |> Ash.Changeset.for_update(name, inputs, action_opts(opts))
+      |> start(&Ash.update/1)
     end
   end
 
   defp run_action(resource, %{type: :destroy, name: name}, pk, inputs, opts) do
-    with {:ok, record} <- reach(resource, pk, opts) do
+    with {:ok, record} <- subject_as_approved(resource, pk, opts) do
       record
-      |> Ash.Changeset.for_destroy(name, inputs, opts)
-      |> Ash.destroy(return_destroyed?: true)
+      |> Ash.Changeset.for_destroy(name, inputs, action_opts(opts))
+      |> start(&Ash.destroy(&1, return_destroyed?: true))
     end
   end
 
   defp run_action(resource, %{type: :action, name: name}, _pk, inputs, opts) do
-    resource |> Ash.ActionInput.for_action(name, inputs, opts) |> Ash.run_action()
+    resource
+    |> Ash.ActionInput.for_action(name, inputs, action_opts(opts))
+    |> start(&Ash.run_action/1)
   end
 
   defp run_action(resource, %{type: :read, name: name}, _pk, inputs, opts) do
-    resource |> Ash.Query.for_read(name, inputs, opts) |> Ash.read()
+    resource |> Ash.Query.for_read(name, inputs, action_opts(opts)) |> start(&Ash.read/1)
   end
+
+  defp action_opts(opts), do: Keyword.delete(opts, :preconditions)
+
+  # An action that is invalid as built is refused before any of it runs: none of its
+  # hooks, and so none of its effect, has happened.
+  defp start(%{valid?: false} = built, run) do
+    case run.(built) do
+      {:error, error} -> {:not_run, error}
+      other -> other
+    end
+  end
+
+  defp start(built, run), do: run.(built)
+
+  # The subject the action will write, refused before it runs when it is out of reach,
+  # gone, or not the version a precondition captured.
+  defp subject_as_approved(resource, pk, opts) do
+    with {:ok, record} <- reach(resource, pk, opts),
+         :ok <- as_captured(resource, record, opts[:preconditions]) do
+      {:ok, record}
+    else
+      {:error, error} -> {:not_run, error}
+      {:not_run, reason} -> {:not_run, reason}
+    end
+  end
+
+  defp as_captured(resource, record, [_ | _] = preconditions) do
+    name = inspect(resource)
+    id = primary_key_string(resource, record)
+
+    case Enum.find(preconditions, &(&1["resource"] == name and &1["id"] == id)) do
+      %{"version_number" => version} ->
+        if Map.get(record, :version_number) == version,
+          do: :ok,
+          else: {:not_run, :subject_changed}
+
+      nil ->
+        :ok
+    end
+  end
+
+  defp as_captured(_resource, _record, _none), do: :ok
 
   defp get(resource, pk, opts) do
     resource

@@ -14,7 +14,8 @@ defmodule AshAgent.Invocation.Failure do
   | the subject is there but the executing actor cannot reach it (`AshAgent.Invocation.SubjectUnreachable`, forbidden) | `:denied` | `failed`, final | an incident |
   | `AshAgent.BusinessError{code}` | `:business` | `failed`, final | a business error `code` |
   | transient (`AshAgent.FailureClass`) | `:transient` | `ready` again after a backoff, until `max_attempts`; then `failed`, which `retry` may re-ready | waits; then an incident |
-  | indeterminate, on a target that writes only here, or an idempotent one | `:transient` | as transient: running it again is safe | waits |
+  | indeterminate, on a target that writes only here | `:transient` | as transient: its effect rolled back | waits |
+  | indeterminate, on an idempotent outside target | `:transient` | `ready` again after a backoff, until `max_attempts`; then `outcome_unknown`, since the effect may have happened | waits |
   | indeterminate, on an outside target that is not idempotent | — | `outcome_unknown`, never retried blindly | waits |
   | a deadline on outside work that is not idempotent | `:timeout` | `outcome_unknown` | waits |
   | a deadline on other work | `:timeout` | `failed`, final | an incident |
@@ -24,6 +25,11 @@ defmodule AshAgent.Invocation.Failure do
   An error is classified from the inside out: the first error in the tree that is an
   `AshAgent.BusinessError` or that an `AshAgent.FailureClass` implementation classifies
   decides; otherwise the outermost Ash error class does.
+
+  An outside target that started is classified with `classify_started/1`: past its
+  start it may already have reached outside, so an error the host has not classified
+  is indeterminate, whatever its Ash class. A refusal by its policies is still a
+  denial: Ash authorizes an action before it runs any of it.
   """
 
   alias AshAgent.BusinessError
@@ -49,15 +55,38 @@ defmodule AshAgent.Invocation.Failure do
   end
 
   @doc """
+  Classifies `error` from an outside target that had started: the host's classification
+  (a business error, or an `AshAgent.FailureClass` implementation) decides; otherwise a
+  forbidden error is `:denied` and anything else `:indeterminate`, with the code the
+  outermost class gives it.
+  """
+  @spec classify_started(term()) :: classified()
+  def classify_started(error) do
+    case inner(error) do
+      nil ->
+        case outer(error) do
+          {:denied, _code} = denied -> denied
+          {_class, code} -> {:indeterminate, code}
+        end
+
+      classified ->
+        classified
+    end
+  end
+
+  @doc """
   What happens next to a row whose attempt `attempt` (counted from 1) failed with
   `classified`: `:fail`, `{:retry, delay_ms}` or `:unknown`. `effects` is the row's
   effects snapshot.
   """
   @spec next(classified(), map(), pos_integer(), pos_integer()) :: next()
-  def next({:indeterminate, code}, effects, attempt, max_attempts) do
-    if repeatable?(effects),
-      do: next({:transient, code}, effects, attempt, max_attempts),
-      else: :unknown
+  def next({:indeterminate, _code}, effects, attempt, max_attempts) do
+    cond do
+      not repeatable?(effects) -> :unknown
+      attempt < max_attempts -> {:retry, backoff(attempt)}
+      outside?(effects) -> :unknown
+      true -> :fail
+    end
   end
 
   def next({:transient, _code}, _effects, attempt, max_attempts) when attempt < max_attempts,
@@ -82,6 +111,29 @@ defmodule AshAgent.Invocation.Failure do
   end
 
   def repeatable?(_effects), do: false
+
+  @doc """
+  Whether the target may reach outside this application, by its effects snapshot.
+  Undeclared counts as reaching outside, which is MCP's default.
+  """
+  @spec outside?(map()) :: boolean()
+  def outside?(effects) when is_map(effects),
+    do: Map.get(effects, "open_world", Map.get(effects, :open_world)) != false
+
+  def outside?(_effects), do: true
+
+  @doc """
+  Whether an earlier attempt of `invocation` may have reached outside: it was attempted
+  `earlier_attempts` times before, and its target, as requested or as declared now,
+  reaches outside. Such a row cannot end as though nothing ran (`stale`, `cancelled`,
+  or failed for a reason found before its target ran): only reconciliation can say what
+  the outside service holds.
+  """
+  @spec attempted_outside?(Ash.Resource.record(), non_neg_integer()) :: boolean()
+  def attempted_outside?(invocation, earlier_attempts) do
+    earlier_attempts > 0 and
+      (outside?(invocation.effects) or AshAgent.Invocation.Target.outside?(invocation.target))
+  end
 
   @doc "The wait before attempt `attempt + 1`: 30 seconds, quadrupling, at most an hour."
   @spec backoff(pos_integer()) :: non_neg_integer()

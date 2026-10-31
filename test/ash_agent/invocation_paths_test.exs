@@ -49,6 +49,19 @@ defmodule AshAgent.InvocationPathsTest do
     claimed
   end
 
+  # The row as if it had been requested under an earlier declaration of its target.
+  defp requested_under_earlier_definition!(row) do
+    earlier = AshAgent.Digest.sha256_hex(%{"effects" => row.effects, "release" => "earlier"})
+
+    {1, _} =
+      Repo.update_all(
+        from(i in "invocations", where: i.id == type(^row.id, Ecto.UUID)),
+        set: [target_digest: earlier]
+      )
+
+    get(row)
+  end
+
   # Moves a timestamp of the row into the past, past the actions: time passing.
   defp elapse!(row, field) do
     past = DateTime.add(DateTime.utc_now(), -60, :second)
@@ -253,6 +266,143 @@ defmodule AshAgent.InvocationPathsTest do
       row = invoke!(nurse, @post, notice())
       assert :failed = execute(row)
       assert %{status: :failed, failure_class: :budget} = get(row)
+    end
+  end
+
+  describe "an attempt that may have reached outside" do
+    test "an error after the call is not a definite failure: an idempotent target runs again",
+         %{nurse: nurse} do
+      # The board takes the notice, then the target's own write loses a race.
+      Board.mode(:accept_then_stale)
+      row = invoke!(nurse, @post_keyed, notice())
+
+      assert :deferred = execute(row)
+      assert %{status: :ready, failure_class: :transient, error_code: "invalid"} = get(row)
+
+      Board.mode(:accept)
+      assert :succeeded = row |> elapse!(:next_attempt_at) |> execute()
+      assert {Board.calls(), Board.notices()} == {2, 1}
+    end
+
+    test "an error after the call on a target that is not idempotent is unknown, then looked up",
+         %{nurse: nurse} do
+      Board.mode(:accept_then_stale)
+      row = invoke!(nurse, @post, notice())
+
+      assert :outcome_unknown = execute(row)
+      assert :succeeded = reconcile(row)
+      assert %{status: :succeeded, reconciled_via: "reconcile_with"} = get(row)
+      assert {Board.calls(), Board.notices()} == {1, 1}
+    end
+
+    @tag :capture_log
+    test "a target that raises after the call is recorded, never left to its lease", %{
+      nurse: nurse
+    } do
+      Board.mode(:accept_then_raise)
+      row = invoke!(nurse, @post, notice())
+
+      assert :outcome_unknown = execute(row)
+      assert %{status: :outcome_unknown, error_code: "raised"} = get(row)
+
+      keyed = invoke!(nurse, @post_keyed, notice(2))
+      assert :deferred = execute(keyed)
+      assert %{status: :ready, failure_class: :transient, error_code: "raised"} = get(keyed)
+    end
+
+    @tag :capture_log
+    test "an idempotent outside target that keeps failing ends unknown at max_attempts, not failed",
+         %{nurse: nurse} do
+      Board.mode(:accept_then_raise)
+      row = invoke!(nurse, @post_keyed, notice())
+
+      assert :deferred = execute(row)
+      assert :deferred = row |> elapse!(:next_attempt_at) |> execute()
+      assert :outcome_unknown = row |> elapse!(:next_attempt_at) |> execute()
+
+      # The board holds the notice: the lookup settles it, and nothing is sent again.
+      assert :succeeded = reconcile(row)
+      assert {get(row).attempt_count, Board.calls(), Board.notices()} == {3, 3, 1}
+    end
+
+    test "a worker that keeps dying is not re-run past max_attempts", %{nurse: nurse} do
+      row = invoke!(nurse, @post_keyed, notice())
+
+      for _attempt <- 1..3 do
+        claimed_and_abandoned(get(row))
+        assert reconcile(row) in [:requeued, :succeeded]
+      end
+
+      # Three attempts, each of which reached the board: the third lease is not handed out
+      # again; the lookup settles the row instead.
+      done = get(row)
+
+      assert {done.status, done.attempt_count, done.reconciled_via} ==
+               {:succeeded, 3, "reconcile_with"}
+
+      assert {:error, :not_claimable} = Executor.claim(done, machinery())
+    end
+
+    test "an expired lease at max_attempts is not taken over at claim either", %{nurse: nurse} do
+      row = invoke!(nurse, @record, %{"licence_number" => "RN-1"})
+
+      for _attempt <- 1..3 do
+        {:ok, _claimed} = Executor.claim(get(row), machinery(), lease_for: 0)
+      end
+
+      assert {:error, :not_claimable} = Executor.claim(get(row), machinery())
+      assert :failed = reconcile(row)
+
+      assert %{status: :failed, failure_class: :transient, error_code: "attempts_exhausted"} =
+               get(row)
+
+      assert checks("RN-1") == []
+    end
+
+    test "a row a deploy changed after an attempt reached outside is reconciled, not stale",
+         %{nurse: nurse} do
+      row = invoke!(nurse, @post_keyed, notice())
+      claimed_and_abandoned(row)
+      assert :requeued = reconcile(row)
+
+      changed = requested_under_earlier_definition!(get(row))
+      assert :outcome_unknown = execute(changed)
+      assert %{status: :outcome_unknown, error_code: "target_changed"} = get(row)
+
+      assert :succeeded = reconcile(row)
+      assert {get(row).status, Board.notices()} == {:succeeded, 1}
+    end
+
+    test "cancelling a ready row an attempt reached outside reconciles it", %{nurse: nurse} do
+      row = invoke!(nurse, @post_keyed, notice())
+      claimed_and_abandoned(row)
+      assert :requeued = reconcile(row)
+
+      asked = Domain.request_cancel!(get(row))
+
+      assert {asked.status, is_struct(asked.cancel_requested_at, DateTime)} ==
+               {:outcome_unknown, true}
+
+      assert :succeeded = reconcile(row)
+      assert get(row).status == :succeeded
+
+      # One that never ran is simply cancelled.
+      assert %{status: :cancelled} =
+               Domain.request_cancel!(invoke!(nurse, @post_keyed, notice(2)))
+    end
+
+    test "a row an attempt reached outside whose principal lost authority is reconciled", %{
+      nurse: nurse
+    } do
+      row = invoke!(nurse, @post_keyed, notice())
+      claimed_and_abandoned(row)
+      assert :requeued = reconcile(row)
+
+      AshAgent.Test.ExecutionIdentity.revoke(nurse.id)
+      on_exit(&AshAgent.Test.ExecutionIdentity.restore/0)
+
+      assert :outcome_unknown = execute(row)
+      assert %{status: :outcome_unknown, error_code: "no_authority: revoked"} = get(row)
     end
   end
 

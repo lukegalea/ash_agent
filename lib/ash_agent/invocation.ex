@@ -71,7 +71,11 @@ defmodule AshAgent.Invocation do
       epoch under `optimistic_lock(:lease_epoch)`, so of two claims from one reading one
       wins. A row whose target is declared differently now from when it was requested
       (its `target_digest` no longer matches), or whose approval no longer holds
-      (`AshAgent.Invocation.Approval`), becomes `stale` instead, and nothing runs.
+      (`AshAgent.Invocation.Approval`), becomes `stale` instead, and nothing runs; or
+      `outcome_unknown`, for reconciliation, when an earlier attempt of it may have
+      reached outside. An expired lease is taken over only while attempts are left. The
+      claim stores the digest of a secret it hands the executor alone
+      (`lease_token_digest`), which a governed target asks for.
     * `succeed` and `fail` (updates): complete a claimed row, filtered on the epoch the
       worker claimed with. A worker whose lease was taken over matches no row, gets
       `Ash.Error.Changes.StaleRecord`, and its transaction rolls back.
@@ -83,15 +87,19 @@ defmodule AshAgent.Invocation do
       when it expires, and a changed subject, a changed target or an expired approval
       makes the row `stale` instead.
     * `request_cancel` (update): cancels a row that has not started; on a row that is
-      executing it only records the request.
+      executing it only records the request. A `ready` row an earlier attempt of which
+      may have reached outside is not cancelled as though nothing ran: its outcome
+      becomes unknown, for reconciliation.
     * `execute` (generic, no transaction): the `:execute` trigger's action. Claims, builds
       the executing actor afresh, runs the target and completes under the fence; see
       `AshAgent.Invocation.Executor`.
-    * `defer`, `dispatch` and `mark_outcome_unknown` (updates, filtered on the claimed
-      epoch): the other ways a claimed row ends an attempt. `defer` makes it `ready`
-      again after a backoff (a transient failure); `dispatch` records that the work was
-      handed on and waits, with no lease, until `deadline_at`; `mark_outcome_unknown`
-      records that the effect may have happened and its acknowledgement was lost.
+    * `defer`, `dispatch`, `mark_outcome_unknown` and `mark_stale` (updates, filtered on
+      the claimed epoch): the other ways a claimed row ends an attempt. `defer` makes it
+      `ready` again after a backoff (a transient failure); `dispatch` records that the
+      work was handed on and waits, with no lease, until `deadline_at`;
+      `mark_outcome_unknown` records that the effect may have happened and its
+      acknowledgement was lost; `mark_stale` records that the subject changed between
+      the claim and the target's read of it, so nothing ran.
     * `reconcile` (generic, no transaction): the `:reconcile` trigger's action. Settles a
       row whose lease expired, whose dispatch deadline passed or whose outcome is
       unknown; see `AshAgent.Invocation.Reconciler`.
@@ -134,12 +142,13 @@ defmodule AshAgent.Invocation do
 
     transitions do
       transition :apply_decision, from: :awaiting_approval, to: [:ready, :rejected, :stale]
-      transition :claim, from: [:ready, :executing], to: [:executing, :stale]
+      transition :claim, from: [:ready, :executing], to: [:executing, :stale, :outcome_unknown]
       transition :succeed, from: :executing, to: :succeeded
       transition :fail, from: :executing, to: :failed
       transition :defer, from: :executing, to: :ready
       transition :dispatch, from: :executing, to: :dispatched
       transition :mark_outcome_unknown, from: [:executing, :dispatched], to: :outcome_unknown
+      transition :mark_stale, from: :executing, to: :stale
       transition :requeue, from: :executing, to: :ready
 
       transition :complete_external,
@@ -151,7 +160,7 @@ defmodule AshAgent.Invocation do
 
       transition :request_cancel,
         from: [:requested, :awaiting_approval, :ready],
-        to: :cancelled
+        to: [:cancelled, :outcome_unknown]
     end
   end
 
@@ -201,6 +210,13 @@ defmodule AshAgent.Invocation do
         allow_nil? false
         default 300_000
         constraints min: 0
+      end
+
+      argument :lease_token_digest, :string do
+        description """
+        SHA-256 of the secret the claiming executor alone holds for this claim
+        (`AshAgent.Invocation.Executor.claim/3`), which a governed target asks for.
+        """
       end
 
       change filter(expr(status in [:ready, :executing]))
@@ -292,6 +308,23 @@ defmodule AshAgent.Invocation do
       change transition_state(:outcome_unknown)
       change set_attribute(:lease_expires_at, nil)
       change AshAgent.Invocation.Changes.EnqueueReconcile
+    end
+
+    update :mark_stale do
+      description """
+      Record that a claimed row's subject changed after its claim, before its target read
+      it: what was approved is not what would run, and nothing ran. Refused unless `epoch`
+      still holds the lease.
+      """
+
+      accept [:error_code]
+      require_atomic? false
+
+      argument :epoch, :integer, allow_nil?: false
+
+      change filter(expr(status == :executing and lease_epoch == ^arg(:epoch)))
+      change transition_state(:stale)
+      change set_attribute(:lease_expires_at, nil)
     end
 
     update :requeue do
@@ -586,6 +619,16 @@ defmodule AshAgent.Invocation do
     end
 
     attribute :lease_expires_at, :utc_datetime_usec, public?: true
+
+    attribute :lease_token_digest, :string do
+      sensitive? true
+
+      description """
+      SHA-256 of the secret the executor that holds the lease was given at its claim. A
+      governed target runs only for a caller that presents the secret
+      (`AshAgent.Validations.Governed`); it never leaves the executor.
+      """
+    end
 
     attribute :attempt_count, :integer do
       allow_nil? false
