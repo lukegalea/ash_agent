@@ -10,8 +10,11 @@ defmodule AshAgent.Invocation.Reconciler do
     * it is `executing` and its lease expired: the worker died, or is stuck. If running
       its target again cannot repeat its effect (it writes only to this application, so
       its effect rolled back, or it is idempotent), the row is made `ready` again
-      (`requeue`). Otherwise its effect may have happened outside, and it becomes
-      `outcome_unknown`. It is never run again blindly;
+      (`requeue`), while it has attempts left. Otherwise its effect may have happened
+      outside, and it becomes `outcome_unknown` (`error_code` `"lease_expired"`, or
+      `"attempts_exhausted"` for an idempotent one out of attempts). It is never run
+      again blindly. A target that writes only here and is out of attempts fails as
+      `:transient` with `"attempts_exhausted"`, which `retry` may re-ready;
     * it is `dispatched` and its deadline passed. Outside work that is not idempotent
       becomes `outcome_unknown` with `failure_class: :timeout`; anything else fails as
       `:timeout`;
@@ -62,17 +65,29 @@ defmodule AshAgent.Invocation.Reconciler do
       not passed?(row.lease_expires_at, now) ->
         {:ok, :skipped}
 
-      Failure.repeatable?(row.effects) ->
+      Failure.repeatable?(row.effects) and row.attempt_count < Info.max_attempts(row.__struct__) ->
         write(row, :requeue, %{epoch: row.lease_epoch}, opts, :requeued)
 
-      true ->
+      Failure.outside?(row.effects) ->
+        code =
+          if Failure.repeatable?(row.effects), do: "attempts_exhausted", else: "lease_expired"
+
         row
         |> write_and_return(
           :mark_outcome_unknown,
-          %{epoch: row.lease_epoch, error_code: "lease_expired"},
+          %{epoch: row.lease_epoch, error_code: code},
           opts
         )
         |> settle(opts)
+
+      true ->
+        write(
+          row,
+          :fail,
+          %{epoch: row.lease_epoch, failure_class: :transient, error_code: "attempts_exhausted"},
+          opts,
+          :failed
+        )
     end
   end
 

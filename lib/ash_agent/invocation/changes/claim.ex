@@ -28,14 +28,27 @@ defmodule AshAgent.Invocation.Changes.Claim do
   makes the row `stale` with the reason as `error_code`, and nothing runs. An approval
   is checked at every claim, not once: it is what was approved, not an exemption.
 
+  A row that would go `stale` after an earlier attempt that may have reached outside
+  (`AshAgent.Invocation.Failure.attempted_outside?/2`: an idempotent outside target made
+  ready again after a lost lease or a failed attempt) becomes `outcome_unknown` instead,
+  with the same `error_code`, and its `:reconcile` job is enqueued: the outside service
+  may hold the effect, and only reconciliation may say so.
+
+  An expired lease is taken over only while the row has attempts left
+  (`attempt_count` below the host's `max_attempts`); past that, reconciliation settles
+  it (`AshAgent.Invocation.Reconciler`). A `ready` row is always claimable: `retry` and
+  a person's resolution make one ready on purpose.
+
   Otherwise the claim moves the row to `executing`, starts a lease of `lease_for`
-  milliseconds, and counts the attempt. The epoch is taken by the action's
-  `optimistic_lock`, so two claims from one reading cannot both win.
+  milliseconds, records `lease_token_digest` (the digest of the secret only the claiming
+  executor holds, which a governed target asks for), and counts the attempt. The epoch is
+  taken by the action's `optimistic_lock`, so two claims from one reading cannot both
+  win.
   """
 
   use Ash.Resource.Change
 
-  alias AshAgent.Invocation.{Approval, Failure, Target}
+  alias AshAgent.Invocation.{Approval, Enqueue, Failure, Info, Target}
 
   @impl true
   def change(changeset, _opts, _context) do
@@ -60,7 +73,8 @@ defmodule AshAgent.Invocation.Changes.Claim do
           lease_expires_at:
             DateTime.add(now, Ash.Changeset.get_argument(changeset, :lease_for), :millisecond),
           attempt_count: data.attempt_count + 1,
-          next_attempt_at: nil
+          next_attempt_at: nil,
+          lease_token_digest: Ash.Changeset.get_argument(changeset, :lease_token_digest)
         })
         |> Ash.Changeset.before_action(&recheck_approval/1)
     end
@@ -73,15 +87,33 @@ defmodule AshAgent.Invocation.Changes.Claim do
     end
   end
 
-  defp stale(changeset, reason) do
-    changeset
-    |> AshStateMachine.transition_state(:stale)
-    |> Ash.Changeset.force_change_attributes(%{
-      error_code: reason,
-      lease_expires_at: nil,
-      attempt_count: changeset.data.attempt_count,
-      next_attempt_at: nil
-    })
+  @doc """
+  Makes the row being claimed `stale` with `reason` as its `error_code`, so its target
+  does not run; or, when an earlier attempt of it may have reached outside, leaves it
+  `outcome_unknown` with the same `error_code` and enqueues `:reconcile`. A change a host
+  attaches to `claim` to refuse the attempt (an approver who may no longer approve) calls
+  this rather than making the row stale itself.
+  """
+  @spec stale(Ash.Changeset.t(), String.t()) :: Ash.Changeset.t()
+  def stale(changeset, reason) do
+    data = changeset.data
+
+    changeset =
+      Ash.Changeset.force_change_attributes(changeset, %{
+        error_code: reason,
+        lease_expires_at: nil,
+        lease_token_digest: nil,
+        attempt_count: data.attempt_count,
+        next_attempt_at: nil
+      })
+
+    if Failure.attempted_outside?(data, data.attempt_count) do
+      changeset
+      |> AshStateMachine.transition_state(:outcome_unknown)
+      |> Ash.Changeset.after_action(&Enqueue.when_unknown/2)
+    else
+      AshStateMachine.transition_state(changeset, :stale)
+    end
   end
 
   @doc "Whether `invocation` may be claimed at `now`."
@@ -91,8 +123,10 @@ defmodule AshAgent.Invocation.Changes.Claim do
 
   def claimable?(%{status: :ready}, _now), do: true
 
-  def claimable?(%{status: :executing, lease_expires_at: %DateTime{} = expires} = row, now),
-    do: DateTime.compare(expires, now) != :gt and Failure.repeatable?(row.effects)
+  def claimable?(%{status: :executing, lease_expires_at: %DateTime{} = expires} = row, now) do
+    DateTime.compare(expires, now) != :gt and Failure.repeatable?(row.effects) and
+      row.attempt_count < Info.max_attempts(row.__struct__)
+  end
 
   def claimable?(_row, _now), do: false
 

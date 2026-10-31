@@ -7,6 +7,10 @@ defmodule AshAgent.Invocation.Changes.RequestCancel do
 
     * A row that has not started (`requested`, `awaiting_approval`, `ready`) becomes
       `cancelled`. A `ready` row's job still runs, finds the row not claimable and ends.
+    * A `ready` row an earlier attempt of which may have reached outside
+      (`AshAgent.Invocation.Failure.attempted_outside?/2`) has perhaps started: it
+      records `cancel_requested_at` and becomes `outcome_unknown`, and its `:reconcile`
+      job is enqueued, so what the outside service holds decides how it ends.
     * A row that is `executing`, `dispatched` or `outcome_unknown` keeps its state and records
       `cancel_requested_at`: its work may already have happened, and what follows is for
       whoever completes or reconciles it to decide.
@@ -21,6 +25,8 @@ defmodule AshAgent.Invocation.Changes.RequestCancel do
 
   require Ash.Expr
 
+  alias AshAgent.Invocation.{Enqueue, Failure}
+
   @not_started [:requested, :awaiting_approval, :ready]
   @in_flight [:executing, :dispatched, :outcome_unknown]
 
@@ -32,6 +38,16 @@ defmodule AshAgent.Invocation.Changes.RequestCancel do
       Ash.Changeset.filter(changeset, Ash.Expr.expr(status == ^status and lease_epoch == ^epoch))
 
     cond do
+      status == :ready and
+          Failure.attempted_outside?(changeset.data, changeset.data.attempt_count) ->
+        changeset
+        |> AshStateMachine.transition_state(:outcome_unknown)
+        |> Ash.Changeset.force_change_attributes(%{
+          cancel_requested_at: DateTime.utc_now(),
+          error_code: "cancel_requested"
+        })
+        |> Ash.Changeset.after_action(&Enqueue.when_unknown/2)
+
       status in @not_started ->
         AshStateMachine.transition_state(changeset, :cancelled)
 

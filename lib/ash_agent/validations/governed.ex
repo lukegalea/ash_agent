@@ -17,6 +17,11 @@ defmodule AshAgent.Validations.Governed do
   all of:
 
     * the invocation is `executing`, under the lease epoch the context names;
+    * the context carries the secret the executor was given when it claimed that
+      lease (`lease_token`), whose digest the claim stored on the row: everything else
+      here is known to whoever asked for the invocation, its id, key, epoch and
+      arguments, so without it the principal could run the action itself, beside the
+      executor, as often as it liked;
     * its `target` is this action;
     * its `args_digest` is the digest, under the host's key (`AshAgent.DigestKey`), of
       the inputs the action was given, with the primary key of the record it acts on
@@ -35,7 +40,7 @@ defmodule AshAgent.Validations.Governed do
   use Ash.Resource.Validation
 
   alias AshAgent.{Digest, ExecutionIdentity}
-  alias AshAgent.Invocation.{Info, Target, Ungoverned}
+  alias AshAgent.Invocation.{Executor, Info, Target, Ungoverned}
 
   @impl true
   def init(opts) do
@@ -69,6 +74,7 @@ defmodule AshAgent.Validations.Governed do
     with {:ok, id, epoch} <- named(subject),
          {:ok, invocation} <- read(resource, id, subject.tenant),
          :ok <- executing(invocation, epoch),
+         :ok <- executor(invocation, subject),
          :ok <- same(invocation.target == target, :other_target),
          :ok <- same_arguments(invocation, resource, inputs(subject)),
          :ok <- same_principal(invocation, resource, actor) do
@@ -93,6 +99,18 @@ defmodule AshAgent.Validations.Governed do
 
   defp executing(%{status: :executing, lease_epoch: epoch}, epoch), do: :ok
   defp executing(_invocation, _epoch), do: {:refused, :not_executing}
+
+  defp executor(%{lease_token_digest: digest}, %{context: %{ash_agent: %{lease_token: token}}})
+       when is_binary(digest) and is_binary(token) do
+    actual = Executor.token_digest(token)
+
+    same(
+      byte_size(actual) == byte_size(digest) and :crypto.hash_equals(actual, digest),
+      :not_executor
+    )
+  end
+
+  defp executor(_invocation, _subject), do: {:refused, :not_executor}
 
   defp same(true, _reason), do: :ok
   defp same(false, reason), do: {:refused, reason}

@@ -14,7 +14,7 @@ defmodule AshAgent.Test.CredentialCheck do
       not idempotent; `:find_notice` asks the board by invocation key whether it holds
       one, and is its `reconcile_with`.
     * `:post_notice_keyed` sends the same notice with the invocation key as the board's
-      idempotency key, and is declared idempotent.
+      idempotency key, and is declared idempotent; `:find_notice` is its lookup too.
     * `:refer` hands a referral to the board and returns a dispatch: the outcome comes
       back later. `:refer_keyed` is the idempotent kind.
     * `:confirm_standing` refuses a lapsed licence with a business error.
@@ -74,7 +74,8 @@ defmodule AshAgent.Test.CredentialCheck do
       kind: :execute,
       destructive?: false,
       idempotent?: true,
-      intent: :execute
+      intent: :execute,
+      reconcile_with: :find_notice
 
     action :refer,
       kind: :execute,

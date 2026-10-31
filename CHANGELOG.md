@@ -16,6 +16,26 @@ Nothing has been released yet.
 
 ### Features:
 
+- An attempt that may have reached outside is never ended as though nothing ran. A row an earlier attempt of which
+  may have reached an outside target becomes `outcome_unknown`, for reconciliation, where it would have gone `stale`
+  at claim (including through a host's change calling `AshAgent.Invocation.Changes.Claim.stale/2`), been cancelled
+  from `ready`, or failed before its target ran (no authority, a target that no longer resolves, a subject out of
+  reach). An outside target that had started and returns an error the host did not classify, or raises, is
+  `:indeterminate`, not `:rejected` or `:permanent` (`AshAgent.Invocation.Failure.classify_started/1`); a forbidden
+  error stays `:denied`. An idempotent outside target out of attempts is `outcome_unknown`, not failed. An expired
+  lease is taken over at claim, or re-readied by `requeue`, only while `attempt_count` is below `max_attempts`;
+  past that, `reconcile` makes it `outcome_unknown` (outside) or fails it as `:transient`, `"attempts_exhausted"`
+  (internal).
+- The executor checks an approved row's subject once more on the record its target is about to write, inside the
+  target's transaction for an internal one: a `version_number` other than the one approved makes the row `stale`
+  through the new `mark_stale` action, and nothing runs. `AshAgent.Invocation.Target.run/3` takes `:preconditions`
+  and returns `{:not_run, reason}` for anything refused before the action started.
+- `AshAgent.Validations.Governed` requires the claim's secret. `AshAgent.Invocation.Executor.claim/3` makes one for
+  each claim, stores only its digest (`lease_token_digest`, a new attribute; `claim` takes it as an argument) and
+  hands it to the target in `context.ash_agent.lease_token`; a caller without it is refused with reason
+  `:not_executor`. The requester knows the row's id, key, epoch and arguments, so they could otherwise run a governed
+  action themselves while the row is executing.
+
 - `AshAgent.Validations.Governed`: a validation that refuses a governed action unless its own invocation is running
   it. It reads the invocation named in `context.ash_agent` and requires it `executing` under the named lease epoch,
   for this action, with an `args_digest` matching the inputs given (plus the acted-on record's primary key), and the
