@@ -16,6 +16,10 @@ Nothing has been released yet.
 
 ### Features:
 
+- usage-rules/triggers.md: the `:step` trigger is unique while a job waits, not while one runs
+  (`worker_opts unique: [period: :infinity, states: [:available, :scheduled, :retryable]]`). With ash_oban's default
+  the executing job counts, so a step that took its tools in its loop and left the run queued had its next job
+  dropped, and the run waited for the sweep.
 - A run's token budget is held before each model call and settled after it. New `AshAgent.Run` attributes
   `budget_reserved`, `budget_holds` (each unsettled hold, keyed `"<run id>:<lease epoch>"`) and `budget_lock`, and
   actions `reserve` and `settle` (both under `optimistic_lock(:budget_lock)`; `reserve` also filtered on the sum
