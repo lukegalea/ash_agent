@@ -624,6 +624,104 @@ defmodule AshAgent.RunTest do
     end
   end
 
+  describe "a run that is not live" do
+    @recorded "AshAgent.Test.CredentialCheck.record"
+
+    defp start_unlive!(nurse, mode, fixtures) do
+      published!()
+
+      Domain.start_run!(
+        @agent,
+        "SYNTHETIC: what is missing for clinician RN-1?",
+        %{mode: mode, fixtures: fixtures},
+        actor: nurse
+      )
+    end
+
+    test "an eval run's tool call is answered from its fixture, and its target never runs",
+         %{nurse: nurse} do
+      ScriptedModel.script!([
+        {:tools, [record_call("call_a", "RN-1")]},
+        {:text, ~s({"recorded": 1})}
+      ])
+
+      fixture = %{"value" => %{"id" => "SYNTHETIC-CHECK-1"}}
+      run = start_unlive!(nurse, :eval, %{@recorded => fixture})
+      assert run.mode == :eval
+
+      assert {:ok, :waiting} = step(run)
+      assert [%{mode: :eval, status: :ready} = row] = invocations(run)
+
+      # Never claimed: no lease, no attempt, no lease token.
+      assert {:error, :not_claimable} = Executor.claim(row, machinery())
+      assert {:ok, :succeeded} = Executor.execute(Invocation, row.id, machinery())
+
+      assert [done] = invocations(run)
+      assert %{status: :succeeded, simulated: true, result: ^fixture} = done
+      assert {done.lease_epoch, done.attempt_count, done.lease_token_digest} == {0, 0, nil}
+      assert Ash.read!(CredentialCheck, actor: nurse) == []
+
+      assert {:ok, :completed} = step(run)
+      [_first, second] = ScriptedModel.requests()
+      assert second.messages |> Enum.find(&(&1.role == :tool)) |> text() =~ "SYNTHETIC-CHECK-1"
+    end
+
+    test "a shadow run's call its fixtures do not answer fails as no_fixture, and asks no one to approve it",
+         %{nurse: nurse} do
+      reviewed = %{
+        "input" => %{"licence_number" => "RN-1", "clinician_name" => "SYNTHETIC Dana Reyes"}
+      }
+
+      ScriptedModel.script!([
+        {:tools, [{"call_a", "credential_check_record_reviewed", reviewed}]}
+      ])
+
+      run = start_unlive!(nurse, :shadow, %{})
+      assert {:ok, :waiting} = step(run)
+
+      assert [%{mode: :shadow, status: :ready, approval_mode: :confirm} = row] = invocations(run)
+      assert {row.approval_digest, row.approval_expires_at} == {nil, nil}
+
+      assert {:ok, :failed} = Executor.execute(Invocation, row.id, machinery())
+
+      assert [%{status: :failed, simulated: true, failure_class: :permanent} = done] =
+               invocations(run)
+
+      assert {done.error_code, done.result, done.lease_epoch} == {"no_fixture", nil, 0}
+      assert Ash.read!(CredentialCheck, actor: nurse) == []
+      assert needs_step?(run)
+    end
+
+    test "a request outside a run is live, and a live run's calls run as before", %{nurse: nurse} do
+      ScriptedModel.script!([{:tools, [record_call("call_a", "RN-1")]}])
+      run = start!(nurse)
+      assert run.mode == :live
+
+      assert {:ok, :waiting} = step(run)
+      assert [%{mode: :live, simulated: false} = row] = invocations(run)
+      execute!(row)
+      assert [_check] = Ash.read!(CredentialCheck, actor: nurse)
+    end
+
+    test "only a read that stays inside may run for a run that is not live" do
+      read = %{"read_only" => true, "open_world" => false}
+
+      assert AshAgent.Invocation.Changes.Claim.runs?(%{mode: :eval, effects: read})
+
+      refute AshAgent.Invocation.Changes.Claim.runs?(%{
+               mode: :eval,
+               effects: %{read | "open_world" => true}
+             })
+
+      refute AshAgent.Invocation.Changes.Claim.runs?(%{
+               mode: :shadow,
+               effects: %{read | "read_only" => false}
+             })
+
+      assert AshAgent.Invocation.Changes.Claim.runs?(%{mode: :live, effects: %{}})
+    end
+  end
+
   defp user_text(text), do: %{role: :user, parts: [%{"type" => "text", "text" => text}]}
 
   test "publishing refuses an output type that names no Ash type" do

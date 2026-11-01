@@ -47,6 +47,11 @@ defmodule AshAgent.Invocation.Executor do
        target that no longer resolves, a subject out of reach or changed), it becomes
        `outcome_unknown` for reconciliation.
 
+  A ready row of a run that is not live (`mode` `:eval` or `:shadow`) whose target is not
+  a read that stays inside (`AshAgent.Invocation.Changes.Claim.runs?/1`) is neither
+  claimed nor run: `simulate` answers it from the run's fixture for its target, ending
+  `:succeeded` or, with no fixture, `:failed`.
+
   Every function returns `{:ok, outcome}` with `outcome` one of `outcomes/0`: `:succeeded`,
   `:failed`, `:deferred` (ready again after a backoff), `:dispatched`,
   `:outcome_unknown`, `:skipped` (not claimable), `:superseded` (the lease was lost
@@ -93,19 +98,55 @@ defmodule AshAgent.Invocation.Executor do
       {:ok, nil} ->
         {:ok, :skipped}
 
+      {:ok, %{status: :ready} = row} ->
+        if Claim.runs?(row), do: claim_and_run(row, opts), else: simulate(row, opts)
+
       {:ok, row} ->
-        case claim(row, opts) do
-          {:ok, claimed} -> run_claimed(claimed, opts)
-          {:error, :not_claimable} -> {:ok, :skipped}
-          {:error, :stale} -> {:ok, :stale}
-          {:error, :outcome_unknown} -> {:ok, :outcome_unknown}
-          {:error, error} -> {:error, error}
-        end
+        claim_and_run(row, opts)
 
       {:error, error} ->
         {:error, error}
     end
   end
+
+  defp claim_and_run(row, opts) do
+    case claim(row, opts) do
+      {:ok, claimed} -> run_claimed(claimed, opts)
+      {:error, :not_claimable} -> {:ok, :skipped}
+      {:error, :stale} -> {:ok, :stale}
+      {:error, :outcome_unknown} -> {:ok, :outcome_unknown}
+      {:error, error} -> {:error, error}
+    end
+  end
+
+  # A row of a run that is not live, whose target is not a read: answered from the run's
+  # fixtures, never claimed, never run.
+  defp simulate(row, opts) do
+    with {:ok, result} <- fixture(row, opts) do
+      row
+      |> Ash.Changeset.for_update(:simulate, %{result: result}, opts)
+      |> Ash.update()
+      |> case do
+        {:ok, %{status: status}} -> {:ok, status}
+        {:error, error} -> if lost_claim?(error), do: {:ok, :skipped}, else: {:error, error}
+      end
+    end
+  end
+
+  defp fixture(%{run_id: run_id, target: target} = row, opts) when is_binary(run_id) do
+    row.__struct__
+    |> Info.run()
+    |> Ash.Query.filter(id == ^run_id)
+    |> Ash.Query.select([:fixtures])
+    |> Ash.read_one(tenant: opts[:tenant], authorize?: false)
+    |> case do
+      {:ok, %{fixtures: fixtures}} -> {:ok, Map.get(fixtures || %{}, target)}
+      {:ok, nil} -> {:ok, nil}
+      {:error, error} -> {:error, error}
+    end
+  end
+
+  defp fixture(_row, _opts), do: {:ok, nil}
 
   @doc """
   Claims `row`. `claim_opts` may set `:lease_for` in milliseconds.

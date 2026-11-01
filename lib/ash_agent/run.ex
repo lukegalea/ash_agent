@@ -104,6 +104,16 @@ defmodule AshAgent.Run do
       invocations that have not started are cancelled with it; one that is executing
       keeps running and records the request. Nothing done is undone.
 
+  ## Runs that cause no effects
+
+  A run started with `mode: :eval` (a suite case) or `:shadow` (a candidate beside live
+  work) takes its steps and model calls like any run, and its in-loop reads run as its
+  executing actor, but nothing it asks for has an effect. Each tool call is still an
+  invocation, recorded with the run's mode, and the host's invocation resource answers
+  it from the run's `fixtures` instead of running its target (`AshAgent.Invocation`,
+  "Invocations of a run that is not live"). The host is told the mode when it names who
+  the run executes as (`c:AshAgent.ExecutionIdentity.run_principal/3`).
+
   `needs_step` is a calculation, not a counter: a run is `queued`, or `waiting` on
   `:tools` with none of its invocations still open. Every invocation that finishes can
   wake the run (`AshAgent.Run.Changes.Wake`, which the host attaches to its invocation
@@ -148,7 +158,7 @@ defmodule AshAgent.Run do
 
     create :start do
       description "Start a run of an agent's latest published version."
-      accept [:input, :run_key, :origin, :subject_type, :subject_id]
+      accept [:input, :run_key, :origin, :subject_type, :subject_id, :mode, :fixtures]
 
       argument :agent, :string do
         description "The agent's key."
@@ -330,6 +340,29 @@ defmodule AshAgent.Run do
       default :direct
       constraints one_of: [:direct, :assistant, :bpmn, :acp, :eval, :schedule]
       description "What started the run."
+    end
+
+    attribute :mode, :atom do
+      allow_nil? false
+      public? true
+      default :live
+      constraints one_of: [:live, :shadow, :eval]
+
+      description """
+      Whether the run's tool calls really run (`:live`), or are answered from `fixtures`
+      (`:shadow`, `:eval`).
+      """
+    end
+
+    attribute :fixtures, :map do
+      allow_nil? false
+      public? true
+      default %{}
+
+      description """
+      What a run that is not live answers its tool calls with, by target:
+      `%{"Resource.Module.action" => result}`.
+      """
     end
 
     attribute :subject_type, :string do

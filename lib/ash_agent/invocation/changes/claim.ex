@@ -5,6 +5,9 @@ defmodule AshAgent.Invocation.Changes.Claim do
   @moduledoc """
   The `claim` action's work, after its filter and `optimistic_lock(:lease_epoch)`.
 
+  A row of a run that is not live is never claimable unless its target is a read that
+  stays inside (`runs?/1`); the executor answers it from fixtures instead.
+
   A row is claimable when it is `ready` and its `next_attempt_at` (set by a backoff) has
   come, or when it is `executing` with an expired lease and running its target again
   cannot repeat its effect (`AshAgent.Invocation.Failure.repeatable?/1` on its effects
@@ -116,19 +119,33 @@ defmodule AshAgent.Invocation.Changes.Claim do
     end
   end
 
+  @doc """
+  Whether `invocation`'s target may run at all: always for a live row; for a row of a
+  run that is not live, only when its effects snapshot says it reads and stays inside
+  (`read_only` and not `open_world`). Any other such row is answered from fixtures and
+  never claimed.
+  """
+  @spec runs?(Ash.Resource.record()) :: boolean()
+  def runs?(%{mode: :live}), do: true
+
+  def runs?(%{effects: %{"read_only" => true, "open_world" => false}}), do: true
+  def runs?(_invocation), do: false
+
   @doc "Whether `invocation` may be claimed at `now`."
   @spec claimable?(Ash.Resource.record(), DateTime.t()) :: boolean()
-  def claimable?(%{status: :ready, next_attempt_at: %DateTime{} = at}, now),
+  def claimable?(invocation, now), do: runs?(invocation) and claimable_now?(invocation, now)
+
+  defp claimable_now?(%{status: :ready, next_attempt_at: %DateTime{} = at}, now),
     do: DateTime.compare(at, now) != :gt
 
-  def claimable?(%{status: :ready}, _now), do: true
+  defp claimable_now?(%{status: :ready}, _now), do: true
 
-  def claimable?(%{status: :executing, lease_expires_at: %DateTime{} = expires} = row, now) do
+  defp claimable_now?(%{status: :executing, lease_expires_at: %DateTime{} = expires} = row, now) do
     DateTime.compare(expires, now) != :gt and Failure.repeatable?(row.effects) and
       row.attempt_count < Info.max_attempts(row.__struct__)
   end
 
-  def claimable?(_row, _now), do: false
+  defp claimable_now?(_row, _now), do: false
 
   @doc """
   Whether the target `invocation` names is declared differently now from when it was

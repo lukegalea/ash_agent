@@ -14,18 +14,22 @@ defmodule AshAgent.Invocation.Changes.Request do
     3. the host names the principal the work executes as
        (`c:AshAgent.ExecutionIdentity.principal_for/2`), also kept as RFC 8693
        delegation (`AshAgent.ExecutionIdentity.delegation/1`);
-    4. the arguments are checked against the target without running it, and the row is
+    4. a run's tool call takes the run's `mode`, read from the run (`run` in the host's
+       `invocation` section); any other request is `:live`. A row that is not live is
+       routed `ready` even when its declaration asks for an approval, because its target
+       will not run (`AshAgent.Invocation`, "Invocations of a run that is not live");
+    5. the arguments are checked against the target without running it, and the row is
        routed: `rejected` if they do not fit or name a record the caller cannot read,
        `awaiting_approval` if the declaration asks for an approval, `ready` otherwise. The subject's `version_number` is kept
        as a precondition. The resolved target and the subject (the record an update or
        destroy acts on, else nil) are put in the changeset context under `:ash_agent`,
        for the host's own changes on `request`, which run after this one;
-    5. just before the insert, once every change of the action (the host's included)
+    6. just before the insert, once every change of the action (the host's included)
        has run, the arguments are digested under the host's key (`AshAgent.DigestKey`),
        and a row awaiting approval records what an approval of it binds: its
        `authorization_details`, their `approval_digest` and `approval_expires_at`
        (`AshAgent.Invocation.Approval`);
-    6. after the insert, inside its transaction, a ready row's `:execute` job is
+    7. after the insert, inside its transaction, a ready row's `:execute` job is
        enqueued, so a committed ready row always has a job and a rolled-back one never
        does.
 
@@ -35,6 +39,8 @@ defmodule AshAgent.Invocation.Changes.Request do
 
   use Ash.Resource.Change
 
+  require Ash.Query
+
   alias AshAgent.Effects.Effect
   alias AshAgent.Invocation.{Approval, Enqueue, Info, Lineage, Target}
 
@@ -43,13 +49,14 @@ defmodule AshAgent.Invocation.Changes.Request do
     args = args(changeset)
 
     with {:ok, lineage} <- lineage(changeset),
+         {:ok, mode} <- mode(changeset, lineage),
          {:ok, target} <- target(changeset),
          {:ok, principal} <- principal(changeset.resource, context) do
       changeset
       |> Ash.Changeset.force_change_attributes(
         Map.merge(lineage, %{
           kind: Lineage.kind(lineage),
-          mode: :live,
+          mode: mode,
           executing_principal: principal,
           delegation: AshAgent.ExecutionIdentity.delegation(principal),
           effects: Effect.to_map(target.effect),
@@ -57,7 +64,7 @@ defmodule AshAgent.Invocation.Changes.Request do
           approval_mode: target.effect.approval
         })
       )
-      |> route(target, args, context)
+      |> route(target, mode, args, context)
       |> Ash.Changeset.before_action(&digest_args(&1, args))
       |> Ash.Changeset.before_action(&bind_approval/1)
       |> Ash.Changeset.after_action(&Enqueue.when_ready/2)
@@ -98,7 +105,29 @@ defmodule AshAgent.Invocation.Changes.Request do
     end
   end
 
-  defp route(changeset, target, args, context) do
+  # A run's tool call takes the run's mode, read from the run itself: nothing a caller
+  # passes can make a request skip its effect.
+  defp mode(changeset, %{run_id: run_id}) when is_binary(run_id) do
+    case Info.run(changeset.resource) do
+      nil ->
+        {:ok, :live}
+
+      run ->
+        run
+        |> Ash.Query.filter(id == ^run_id)
+        |> Ash.Query.select([:mode])
+        |> Ash.read_one(tenant: changeset.tenant, authorize?: false)
+        |> case do
+          {:ok, %{mode: mode}} -> {:ok, mode}
+          {:ok, nil} -> {:ok, :live}
+          {:error, error} -> {:error, :parent, "cannot read the run: #{Exception.message(error)}"}
+        end
+    end
+  end
+
+  defp mode(_changeset, _lineage), do: {:ok, :live}
+
+  defp route(changeset, target, mode, args, context) do
     case Target.prepare(target, args, Ash.Context.to_opts(context, tenant: changeset.tenant)) do
       {:ok, %{subject: subject}} ->
         changeset
@@ -107,10 +136,10 @@ defmodule AshAgent.Invocation.Changes.Request do
           Target.preconditions(target, subject)
         )
         |> Ash.Changeset.set_context(%{ash_agent: %{target: target, subject: subject}})
-        |> AshStateMachine.transition_state(first_state(target.effect))
+        |> AshStateMachine.transition_state(first_state(target.effect, mode))
         |> Ash.Changeset.force_change_attribute(
           :approval_expires_at,
-          Approval.expires_at(target.effect, DateTime.utc_now())
+          if(mode == :live, do: Approval.expires_at(target.effect, DateTime.utc_now()))
         )
 
       {:error, messages} ->
@@ -123,8 +152,11 @@ defmodule AshAgent.Invocation.Changes.Request do
     end
   end
 
-  defp first_state(%Effect{approval: :none}), do: :ready
-  defp first_state(%Effect{}), do: :awaiting_approval
+  # A row that will not run asks nobody to approve it; `approval_mode` still says it
+  # would have.
+  defp first_state(_effect, mode) when mode != :live, do: :ready
+  defp first_state(%Effect{approval: :none}, _mode), do: :ready
+  defp first_state(%Effect{}, _mode), do: :awaiting_approval
 
   # After `digest_args/2`, so the arguments' digest is part of what is bound.
   defp bind_approval(changeset) do
