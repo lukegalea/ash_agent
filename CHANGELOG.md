@@ -16,6 +16,9 @@ Nothing has been released yet.
 
 ### Features:
 
+- `record_step` enqueues the next `:step` job only when it leaves the run queued. A run it leaves waiting is woken by
+  what it waits on (`AshAgent.Run.Changes.Wake`, `extend`) or found by the sweep; with `:executing` out of the unique
+  states, enqueueing it too left a job that could only end as `:skipped`.
 - usage-rules/triggers.md: the `:step` trigger is unique while a job waits, not while one runs
   (`worker_opts unique: [period: :infinity, states: [:available, :scheduled, :retryable]]`). With ash_oban's default
   the executing job counts, so a step that took its tools in its loop and left the run queued had its next job

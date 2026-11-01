@@ -20,8 +20,9 @@ defmodule AshAgent.Run.Changes.RecordStep do
       parent, as the actor `c:AshAgent.ExecutionIdentity.requester_for/1` builds. Each
       row must execute as the run does: an invocation whose `executing_principal` is
       not the run's is refused, and the record with it;
-    * a run left `queued` or `waiting` has its next `:step` job enqueued; a run that
-      `failed` has its tool calls that have not started cancelled.
+    * a run left `queued` has its next `:step` job enqueued (one left `waiting` is woken
+      by what it waits on); a run that `failed` has its tool calls that have not started
+      cancelled.
 
   `outcome` moves the run: `:running` (it carries on: only messages are appended),
   `:queued`, `:waiting` (on `blocked_on`), `:completed` (with `output`) or `:failed`
@@ -172,5 +173,9 @@ defmodule AshAgent.Run.Changes.RecordStep do
     end
   end
 
-  defp after_outcome(changeset, run), do: Enqueue.step(changeset, run)
+  # A run left waiting is woken by what it waits on (`AshAgent.Run.Changes.Wake` when an
+  # invocation finishes, `extend` for its budget), or found by the `:step` sweep: a job
+  # enqueued now would only end as `:skipped`.
+  defp after_outcome(changeset, %{status: :queued} = run), do: Enqueue.step(changeset, run)
+  defp after_outcome(_changeset, run), do: {:ok, run}
 end
