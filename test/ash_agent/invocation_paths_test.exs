@@ -430,6 +430,47 @@ defmodule AshAgent.InvocationPathsTest do
       assert [%{"outcome" => "failed", "via" => "callback"}] = late.evidence
     end
 
+    test "a callback that succeeds records what the work came back with; nothing else does",
+         %{nurse: nurse} do
+      answered = invoke!(nurse, @refer, notice())
+      :dispatched = execute(answered)
+      answer = %{"answer" => "SYNTHETIC: the referral was accepted for Tuesday"}
+
+      done =
+        Domain.complete_external!(get(answered), %{
+          outcome: :succeeded,
+          via: "callback",
+          result: answer
+        })
+
+      assert {done.status, done.result} == {:succeeded, answer}
+
+      # A late callback's result is neither recorded nor kept as evidence.
+      late =
+        Domain.complete_external!(done, %{
+          outcome: :succeeded,
+          via: "callback",
+          result: %{"answer" => "SYNTHETIC: a second answer"}
+        })
+
+      assert late.result == answer
+      assert [evidence] = late.evidence
+      refute Map.has_key?(evidence, "result")
+
+      # A failed outcome records no result.
+      declined = invoke!(nurse, @refer, notice())
+      :dispatched = execute(declined)
+
+      failed =
+        Domain.complete_external!(get(declined), %{
+          outcome: :failed,
+          via: "callback",
+          result: %{"answer" => "SYNTHETIC: not this one"}
+        })
+
+      assert {failed.status, failed.result} == {:failed, nil}
+    end
+
     test "a passed deadline on outside work that is not idempotent is unknown", %{
       nurse: nurse
     } do

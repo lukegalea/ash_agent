@@ -8,10 +8,13 @@ defmodule AshAgent.Invocation.Changes.CompleteExternal do
 
     * A `dispatched` or `outcome_unknown` row becomes `succeeded` or `failed`, with
       `reconciled_via`, `effect_observed_at` and, when given, the effect's reference. A
-      failed outcome is recorded with `failure_class` (default `:permanent`).
+      succeeded outcome records `result` when given: what the work came back with, which
+      a run's next step reads as the tool call's result. A failed outcome is recorded
+      with `failure_class` (default `:permanent`) and no result.
     * A row that is already final is not changed: the callback is appended to its
-      `evidence`, with when it arrived and what it said. A callback that contradicts the
-      recorded outcome is how an operator finds out; it never rewrites it.
+      `evidence`, with when it arrived and what it said (never its `result`). A callback
+      that contradicts the recorded outcome is how an operator finds out; it never
+      rewrites it.
     * Any other row has no outside work to complete, and is refused.
 
   The update is filtered on the status and lease epoch it read, so of two callbacks for
@@ -34,12 +37,16 @@ defmodule AshAgent.Invocation.Changes.CompleteExternal do
       Ash.Changeset.filter(changeset, Ash.Expr.expr(status == ^status and lease_epoch == ^epoch))
 
     cond do
+      status in @open and arg.(:outcome) == :succeeded ->
+        complete(changeset, :succeeded, arg)
+
       status in @open ->
-        complete(changeset, arg.(:outcome), arg)
+        changeset |> without_result() |> complete(:failed, arg)
 
       status in @final ->
-        Ash.Changeset.force_change_attribute(
-          changeset,
+        changeset
+        |> without_result()
+        |> Ash.Changeset.force_change_attribute(
           :evidence,
           changeset.data.evidence ++ [evidence(arg)]
         )
@@ -68,6 +75,15 @@ defmodule AshAgent.Invocation.Changes.CompleteExternal do
     changeset
     |> AshStateMachine.transition_state(outcome)
     |> Ash.Changeset.force_change_attributes(observed)
+  end
+
+  # A result is only ever the result of work that succeeded now. A host that encrypts
+  # `result` at rest turns the accepted attribute into an argument it encrypts later in
+  # the action, so both are dropped.
+  defp without_result(changeset) do
+    changeset
+    |> Ash.Changeset.clear_change(:result)
+    |> Ash.Changeset.force_delete_argument(:result)
   end
 
   defp evidence(arg) do
