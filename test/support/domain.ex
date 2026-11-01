@@ -53,6 +53,9 @@ defmodule AshAgent.Test.Domain do
       define :claim_step, action: :claim_step
       define :record_step, action: :record_step
       define :recover_run, action: :recover
+      define :reserve_budget, action: :reserve
+      define :settle_budget, action: :settle
+      define :extend_run, action: :extend, args: [:tokens]
       define :request_run_cancel, action: :request_cancel
       define :step_run, action: :step, args: [:primary_key]
     end

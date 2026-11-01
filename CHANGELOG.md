@@ -16,6 +16,19 @@ Nothing has been released yet.
 
 ### Features:
 
+- A run's token budget is held before each model call and settled after it. New `AshAgent.Run` attributes
+  `budget_reserved`, `budget_holds` (each unsettled hold, keyed `"<run id>:<lease epoch>"`) and `budget_lock`, and
+  actions `reserve` and `settle` (both under `optimistic_lock(:budget_lock)`; `reserve` also filtered on the sum
+  staying within `budget_limit`, and refused with `AshAgent.Run.BudgetExhausted` when it would not) and `extend`
+  (raises `budget_limit`; a run waiting on its budget is queued again). The step reserves what is left before its call
+  and settles the tokens the call used, however the call ended; a refused reservation makes the run wait on its
+  budget, with no call. A hold whose worker died is released by the run's next lease. `AshAgent.Run.Budget` holds
+  the retry loop. `record_step` no longer takes `tokens`: `settle` alone writes `budget_spent`.
+- A run can name the record it is about: `AshAgent.Run`'s `start` accepts `subject_type` (a resource's module name)
+  and `subject_id`, both or neither. The starter must be able to read the record (one they cannot is refused like one
+  that does not exist), and it is left in the changeset context as `ash_agent.subject` for the host's changes on
+  `start`, as an invocation's `request` leaves its subject, so a host can seal the run's content under the subject's
+  erasure key.
 - `complete_external` accepts `result`: what handed-on work came back with (a person's answer, a callback's payload),
   recorded on a row that succeeds and read by a run's next step as the tool call's result. A failed outcome and a late
   callback on a final row record none.

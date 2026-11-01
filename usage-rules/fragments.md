@@ -278,7 +278,10 @@ end
 
 1. Start a run with `start` (the agent's key and the request as `input`). It pins the key's latest published version
    and refuses a drifted one. Who may start which agent, and who the run executes as, are your
-   `c:AshAgent.ExecutionIdentity.run_principal/3`'s answer; a refusal is `AshAgent.Invocation.NoPrincipal`.
+   `c:AshAgent.ExecutionIdentity.run_principal/3`'s answer; a refusal is `AshAgent.Invocation.NoPrincipal`. A run
+   about a record names it (`subject_type`, `subject_id`): the starter must be able to read it, and your own changes
+   on `start` find it in the changeset context as `ash_agent.subject`, where an invocation's `request` leaves its
+   subject. Seal the run's content under the subject's key there, so erasing the subject reaches the run.
 2. Never run a tool's effect in the tool loop. Only an Ash `:read` action whose effects declaration has
    `open_world?: false` runs in the loop (as the executing actor, and only when `Ash.can?` says the actor may). Every
    other call stops the loop and becomes an invocation keyed `run:<run id>:<step seq>:<tool call id>`, with the run as
@@ -288,7 +291,8 @@ end
    next step; that is not an error.
 4. `claim_step` has one winner per epoch, and checks the deadline (`failed`, `:timeout`), drift (`failed`,
    `"definition_drift"`), `max_steps` and `max_tool_calls` (`waiting` on `:limit`) and the token budget (`waiting` on
-   `:budget`). Nothing in the package lifts a limit or a budget: a run waiting on one waits for you.
+   `:budget`). Nothing in the package lifts a limit: a run waiting on one waits for you. A run waiting on its budget
+   waits until `extend` raises it, which queues it again.
 5. `record_step` is fenced on the claimed epoch and the journal's `step_seq`. A refused record changes nothing: no
    step, no invocation, no transition. Give the job runner alone authority over `claim_step`, `record_step`,
    `recover`, `step` and the step resource's `append`.
@@ -304,15 +308,22 @@ end
    rest. The package reads a sealed field through the calculation that opens it.
 10. A model call that fails, or a model profile your runtime cannot use now, records nothing: the run stays `running`
     until its lease expires and `recover` queues it again, so the deadline bounds the retries.
+11. Every model call holds what is left of the run's token budget before it is made (`reserve`) and is settled after
+    it (`settle`: the hold released, the tokens its usage reports added to `budget_spent`), whatever became of it.
+    Both write under `optimistic_lock(:budget_lock)`, so holds read from one row are written once and never add up
+    past `budget_limit`; a step whose reservation is refused waits on its budget (`"token_budget"`) and makes no call.
+    A hold whose worker died is released by the run's next lease. Usage is known only after a call, so one call can
+    use more than it held: that is recorded as spent, and the run waits on its budget at its next claim. Give the job
+    runner alone `reserve` and `settle`; `extend` is for whoever may lift a run's budget (an operator, say).
 
 ### What you add on the resources
 
 | You add | Why |
 |---|---|
 | Tenancy and ownership | A run is the requester's; copy its owner onto each step so the same grants read both |
-| Policies | Who may start (a person, for themselves), read and cancel; the machinery actions for the job runner only |
+| Policies | Who may start (a person, for themselves), read, cancel and `extend`; the machinery actions (`reserve` and `settle` among them) for the job runner only |
 | The `:step` and `:recover` triggers | triggers.md |
 | `Wake` on the invocation resource | A finished tool call enqueues its run's step |
 | A check that a tool call's parent run is the requester's | `invoke` records whatever `parent` it is given |
-| Sealing | `input`, `output` and `parts` |
+| Sealing | `input`, `output` and `parts`, under the run's subject's key when it names one |
 | `AshAgent.Runtime` | The model, and the guarded transport that records each call |

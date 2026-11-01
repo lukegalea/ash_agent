@@ -19,6 +19,17 @@ defmodule AshAgent.Run.Changes.Start do
   budget the version's `token_budget`. A run with no key gets a fresh one. Its first
   step is enqueued in the same transaction.
 
+  ## The subject
+
+  A run that names the record it is about (`subject_type` and `subject_id`, both or
+  neither) gets that record read as the actor, in the run's tenant, before anything
+  else: a record the actor cannot read is refused the same way as one that does not
+  exist, so a run never learns more about a record than its starter could. The record
+  is put in the changeset context as `ash_agent.subject`, where an invocation's
+  `request` puts its subject, for the host's own changes on `start` (which run after
+  this one): sealing the run's content under the subject's erasure scope is the host's
+  choice, made there. `subject_type` is stored as the resource's module name.
+
   The version is read without authorization: it is the action's own bookkeeping, and
   whether the actor may start the agent is the host's answer above.
   """
@@ -27,12 +38,13 @@ defmodule AshAgent.Run.Changes.Start do
 
   alias AshAgent.AgentVersion.Definition
   alias AshAgent.Invocation.NoPrincipal
-  alias AshAgent.Run.{Enqueue, Info}
+  alias AshAgent.Run.{Enqueue, Info, Subject}
 
   @impl true
   def change(changeset, _opts, context) do
     changeset
     |> default_key()
+    |> read_subject(context)
     |> Ash.Changeset.before_action(&pin(&1, context))
     |> Ash.Changeset.after_action(&Enqueue.step/2)
   end
@@ -44,6 +56,24 @@ defmodule AshAgent.Run.Changes.Start do
 
       _key ->
         changeset
+    end
+  end
+
+  defp read_subject(changeset, context) do
+    type = Ash.Changeset.get_attribute(changeset, :subject_type)
+    id = Ash.Changeset.get_attribute(changeset, :subject_id)
+
+    case Subject.read(type, id, Ash.Context.to_opts(context, tenant: changeset.tenant)) do
+      {:ok, nil} ->
+        changeset
+
+      {:ok, %{__struct__: resource} = subject} ->
+        changeset
+        |> Ash.Changeset.force_change_attribute(:subject_type, inspect(resource))
+        |> Ash.Changeset.set_context(%{ash_agent: %{subject: subject}})
+
+      {:error, field, message} ->
+        Ash.Changeset.add_error(changeset, field: field, message: message)
     end
   end
 

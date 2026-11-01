@@ -21,14 +21,19 @@ defmodule AshAgent.Run.Stepper do
        run wait; a missing one (the worker died before it was requested) is requested
        now, and the run waits. An in-loop read is run again. Results are recorded as
        steps under the fence.
-    4. **Model call**, with no transaction open: `AshAi.ToolLoop.stream/2` once
+    4. **Model call**, with no transaction open. What is left of the token budget is
+       held for it first (`AshAgent.Run.Budget.reserve/2`); when nothing is, the run
+       waits on its budget (`"token_budget"`) and no call is made. Then
+       `AshAi.ToolLoop.stream/2` once
        (`max_iterations: 1`), with the host's model (`AshAgent.Runtime`), the version's
        instructions as the system prompt, and `AshAgent.Run.Toolset.approver/1` as the
        approval rule. Each message the loop emits is recorded as a step under the fence
        as it arrives, so a worker that dies mid-call loses only what was not yet emitted.
        When the instructions or tools changed since the last call (the
        `prompt_fingerprint` differs), the replayed turns' reasoning is left out, as
-       `AshAi.Transcript` says it must be.
+       `AshAi.Transcript` says it must be. However the call ends, it is settled
+       (`AshAgent.Run.Budget.settle/3`, with the tokens its usage reports) before the
+       step records anything that could start the next call.
     5. **Record** (`record_step`, fenced): the loop stopped for governed calls: they are
        requested and the run waits on them. The loop ran reads and hit its iteration
        limit: the run is queued for its next step. The model answered: the answer is
@@ -50,7 +55,7 @@ defmodule AshAgent.Run.Stepper do
   require Logger
 
   alias AshAgent.Invocation.Failure
-  alias AshAgent.Run.{Info, Journal, Output, Toolset}
+  alias AshAgent.Run.{Budget, Info, Journal, Output, Toolset}
 
   @outcomes [
     :completed,
@@ -283,7 +288,9 @@ defmodule AshAgent.Run.Stepper do
             context: %{ash_agent: %{run_id: run.id}}
           )
 
-        stream(run, version, toolset, messages, loop_opts, fingerprint, opts)
+        reserved(run, opts, fn run ->
+          stream(run, version, toolset, messages, loop_opts, fingerprint, opts)
+        end)
 
       {:error, reason} ->
         Logger.warning("agent run #{run.id}: no model to call: #{inspect(reason)}")
@@ -291,9 +298,49 @@ defmodule AshAgent.Run.Stepper do
     end
   end
 
+  # The call is made only once what is left of the budget is held for it.
+  defp reserved(run, opts, call) do
+    case Budget.reserve(run, opts) do
+      {:ok, run} ->
+        call.(run)
+
+      {:error, :exhausted} ->
+        record(run, %{outcome: :waiting, blocked_on: :budget, error_code: "token_budget"}, opts)
+
+      {:error, :superseded} ->
+        {:ok, :superseded}
+
+      {:error, :contended} ->
+        Logger.warning("agent run #{run.id}: its budget kept changing; tried again later")
+        {:ok, :interrupted}
+
+      {:error, error} ->
+        {:error, error}
+    end
+  end
+
+  # Whatever became of the call, it is settled before anything that could start the
+  # next one is recorded, and what follows is recorded on the run as settled: a host may
+  # lock every write to the row.
   defp stream(run, version, toolset, messages, loop_opts, fingerprint, opts) do
     acc = %{run: run, error: nil, limit?: false, turn_seq: nil}
 
+    case consume(acc, messages, loop_opts, fingerprint, opts) do
+      {:done, result, acc} ->
+        run = Budget.settle(acc.run, tokens(result.usage), opts)
+        finish(%{acc | run: run}, result, version, toolset, fingerprint, opts)
+
+      {:stopped, result, acc} ->
+        Budget.settle(acc.run, 0, opts)
+        result
+
+      {:interrupted, acc} ->
+        Budget.settle(acc.run, 0, opts)
+        {:ok, :interrupted}
+    end
+  end
+
+  defp consume(acc, messages, loop_opts, fingerprint, opts) do
     messages
     |> AshAi.ToolLoop.stream(loop_opts)
     |> Enum.reduce_while(acc, fn
@@ -308,7 +355,7 @@ defmodule AshAgent.Run.Stepper do
             {:cont, %{acc | run: run, turn_seq: seq}}
 
           {:stop, result} ->
-            {:halt, {:stopped, result}}
+            {:halt, {:stopped, result, acc}}
         end
 
       {:error, :max_iterations_reached}, acc ->
@@ -324,18 +371,18 @@ defmodule AshAgent.Run.Stepper do
         {:cont, acc}
     end)
     |> case do
-      {:done, result, acc} -> finish(acc, result, version, toolset, fingerprint, opts)
-      {:stopped, result} -> result
-      %{} -> {:ok, :interrupted}
+      {:done, _result, _acc} = done -> done
+      {:stopped, _result, _acc} = stopped -> stopped
+      %{} = acc -> {:interrupted, acc}
     end
   rescue
     error ->
       Logger.error(
-        "agent run #{run.id}: model call raised: " <>
+        "agent run #{acc.run.id}: model call raised: " <>
           Exception.format(:error, error, __STACKTRACE__)
       )
 
-      {:ok, :interrupted}
+      {:interrupted, acc}
   end
 
   defp finish(%{error: error}, _result, _version, _toolset, _fingerprint, _opts)
@@ -347,7 +394,6 @@ defmodule AshAgent.Run.Stepper do
     counts = %{
       model_calls: 1,
       tool_calls: length(result.tool_calls_made || []),
-      tokens: tokens(result.usage),
       prompt_fingerprint: fingerprint
     }
 

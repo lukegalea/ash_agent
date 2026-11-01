@@ -50,7 +50,6 @@ defmodule AshAgent.Run.Changes.RecordStep do
         step_seq: data.step_seq + length(steps),
         step_count: data.step_count + arg.(:model_calls),
         tool_call_count: data.tool_call_count + arg.(:tool_calls),
-        budget_spent: data.budget_spent + arg.(:tokens),
         repair_count: data.repair_count + arg.(:repairs),
         prompt_fingerprint: arg.(:prompt_fingerprint) || data.prompt_fingerprint
       }
