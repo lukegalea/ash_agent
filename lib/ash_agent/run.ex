@@ -43,8 +43,9 @@ defmodule AshAgent.Run do
   `queued → running → (waiting) → … → completed | failed | cancelled`. `completed`,
   `failed` and `cancelled` are final. A `waiting` run says what it waits for in
   `blocked_on`: `:tools` (its tool calls' invocations), `:budget` (its token budget is
-  spent) or `:limit` (its step or tool-call limit is reached). Nothing in this package
-  lifts a budget or a limit; a run waiting on one stays until its host extends it.
+  spent) or `:limit` (its step or tool-call limit is reached). A run waiting on its
+  budget stays until its host extends it (`extend`); one waiting on a limit stays until
+  its host lifts it.
 
   ## One step
 
@@ -62,8 +63,11 @@ defmodule AshAgent.Run do
     3. **Tool results**: a model turn whose calls have no result yet gets them, from
        each call's invocation when it has finished; an in-loop read is run again. While
        any invocation has not finished, the run waits for it, and no model call is made.
-    4. **Model call**, outside any transaction: ash_ai's tool loop, once, with the
-       host's model (`AshAgent.Runtime`). In-loop reads (Ash `:read` actions that do not
+    4. **Model call**, outside any transaction: the step first holds what is left of
+       the token budget (`reserve`, `AshAgent.Run.Budget`), and waits on its budget when
+       nothing is; then ash_ai's tool loop, once, with the host's model
+       (`AshAgent.Runtime`). After the call, `settle` releases the hold and adds the
+       tokens it used to `budget_spent`. In-loop reads (Ash `:read` actions that do not
        reach outside) run in the loop as the executing actor; every other call stops the
        loop. Each message the loop adds is recorded as it arrives, under the fence.
     5. **Record** (`record_step`, fenced on the epoch): the calls the loop stopped for
@@ -90,6 +94,10 @@ defmodule AshAgent.Run do
       `AshAgent.Run.Changes.Start`).
     * `claim_step`, `record_step`: the step's own writes, above.
     * `step` (generic, no transaction): the `:step` trigger's action.
+    * `reserve`, `settle` (update): the budget's writes, under
+      `optimistic_lock(:budget_lock)` (`AshAgent.Run.Budget`).
+    * `extend` (update): raises the token budget; a run waiting on it is queued again.
+      Who may extend a run is the host's policy.
     * `recover` (update): queues again a `running` run whose lease expired: its worker
       died, or its model call failed.
     * `request_cancel` (update): cancels a run that has not finished. Its tool calls'
@@ -101,8 +109,8 @@ defmodule AshAgent.Run do
   wake the run (`AshAgent.Run.Changes.Wake`, which the host attaches to its invocation
   resource), and the `:step` sweep picks up any run whose wake-up was lost.
 
-  Fencing uses a filter on the update and `optimistic_lock`, never an atomic update, so
-  it works on hosts whose audit wrapper refuses atomics.
+  Fencing and the budget use a filter on the update and `optimistic_lock`, never an
+  atomic update, so they work on hosts whose audit wrapper refuses atomics.
 
   ## What the fragment does not declare
 
@@ -130,6 +138,7 @@ defmodule AshAgent.Run do
         to: [:running, :queued, :waiting, :completed, :failed]
 
       transition :recover, from: :running, to: :queued
+      transition :extend, from: :waiting, to: :queued
       transition :request_cancel, from: [:queued, :running, :waiting], to: :cancelled
     end
   end
@@ -206,7 +215,6 @@ defmodule AshAgent.Run do
       argument :error_code, :string, constraints: [max_length: 256]
       argument :model_calls, :integer, allow_nil?: false, default: 0, constraints: [min: 0]
       argument :tool_calls, :integer, allow_nil?: false, default: 0, constraints: [min: 0]
-      argument :tokens, :integer, allow_nil?: false, default: 0, constraints: [min: 0]
       argument :repairs, :integer, allow_nil?: false, default: 0, constraints: [min: 0]
       argument :prompt_fingerprint, :string
 
@@ -223,6 +231,62 @@ defmodule AshAgent.Run do
       change transition_state(:queued)
       change set_attribute(:lease_expires_at, nil)
       change AshAgent.Run.Changes.EnqueueStep
+    end
+
+    update :reserve do
+      description """
+      Hold tokens of the run's budget for one model call, before the call is made
+      (`AshAgent.Run.Budget`). Refused with `AshAgent.Run.BudgetExhausted` when fewer are left.
+      """
+
+      accept []
+      require_atomic? false
+
+      argument :run_id, :uuid do
+        description "The run whose step makes the call."
+        allow_nil? false
+      end
+
+      argument :epoch, :integer do
+        description "The lease of that run the call is made under."
+        allow_nil? false
+      end
+
+      argument :tokens, :integer, allow_nil?: false, constraints: [min: 1]
+
+      change optimistic_lock(:budget_lock)
+      change AshAgent.Run.Changes.Reserve
+    end
+
+    update :settle do
+      description """
+      Release a call's hold and add the tokens it used to `budget_spent`, after the call
+      (`AshAgent.Run.Budget`).
+      """
+
+      accept []
+      require_atomic? false
+
+      argument :run_id, :uuid, allow_nil?: false
+      argument :epoch, :integer, allow_nil?: false
+      argument :tokens, :integer, allow_nil?: false, constraints: [min: 0]
+
+      change optimistic_lock(:budget_lock)
+      change AshAgent.Run.Changes.Settle
+    end
+
+    update :extend do
+      description """
+      Raise the run's token budget by `tokens`. A run waiting on its budget is queued again.
+      """
+
+      accept []
+      require_atomic? false
+
+      argument :tokens, :integer, allow_nil?: false, constraints: [min: 1]
+
+      change optimistic_lock(:budget_lock)
+      change AshAgent.Run.Changes.Extend
     end
 
     update :request_cancel do
@@ -358,7 +422,32 @@ defmodule AshAgent.Run do
       allow_nil? false
       public? true
       default 0
-      description "Tokens the run's recorded model calls spent."
+      description "Tokens the run's settled model calls used."
+    end
+
+    attribute :budget_reserved, :integer do
+      allow_nil? false
+      public? true
+      default 0
+      description "Tokens held for model calls that have not settled: the sum of `budget_holds`."
+    end
+
+    attribute :budget_holds, :map do
+      allow_nil? false
+      public? true
+      default %{}
+
+      description """
+      Each hold not yet settled, by the lease that took it: `%{"<run id>:<lease epoch>" => tokens}`.
+      """
+    end
+
+    attribute :budget_lock, :integer do
+      allow_nil? false
+      public? true
+      default 0
+
+      description "Incremented by every budget write; `reserve`, `settle` and `extend` lock on it."
     end
 
     attribute :deadline_at, :utc_datetime_usec, public?: true

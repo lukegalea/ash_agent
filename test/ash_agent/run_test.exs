@@ -411,6 +411,146 @@ defmodule AshAgent.RunTest do
     end
   end
 
+  describe "the token budget" do
+    defp set_budget!(run, fields) do
+      {1, _} =
+        Repo.update_all(from(r in "agent_runs", where: r.id == type(^run.id, Ecto.UUID)),
+          set: fields
+        )
+
+      reload(run)
+    end
+
+    defp claimed!(run) do
+      {:ok, claimed} = Stepper.claim(reload(run), machinery())
+      claimed
+    end
+
+    defp hold(run, epoch, tokens), do: %{run_id: run.id, epoch: epoch, tokens: tokens}
+
+    test "a step holds what is left before its call and settles what the call used",
+         %{nurse: nurse} do
+      ScriptedModel.script!([{:die, :worker_killed}, {:text, ~s({"missing": 0})}])
+      run = start!(nurse)
+
+      # The worker dies during its call: the hold it took first is still on the run.
+      {pid, ref} = spawn_monitor(fn -> step(run) end)
+      assert_receive {:DOWN, ^ref, :process, ^pid, :worker_killed}, 5_000
+
+      died = reload(run)
+      assert %{budget_reserved: 10_000, budget_spent: 0} = died
+      assert died.budget_holds == %{"#{run.id}:#{died.lease_epoch}" => 10_000}
+
+      # The next lease releases it when it holds its own, and settles its call.
+      expire_lease!(run)
+      Domain.recover_run!(reload(run), machinery())
+      assert {:ok, :completed} = step(run)
+
+      assert %{budget_spent: 48, budget_reserved: 0, budget_holds: holds} = reload(run)
+      assert holds == %{}
+    end
+
+    test "a hold is refused past the limit, and two holds read from one row cannot both be written",
+         %{nurse: nurse} do
+      run = start!(nurse) |> claimed!()
+      epoch = run.lease_epoch
+
+      assert {:error, %Ash.Error.Invalid{errors: [%AshAgent.Run.BudgetExhausted{} = error]}} =
+               Domain.reserve_budget(run, hold(run, epoch, 10_001), machinery())
+
+      assert error.reason == :budget
+      assert error.available == 10_000
+
+      assert {:ok, %{budget_reserved: 6_000}} =
+               Domain.reserve_budget(run, hold(run, epoch, 6_000), machinery())
+
+      # A second reservation from the same reading loses to the first.
+      assert {:error, %Ash.Error.Invalid{errors: [%Ash.Error.Changes.StaleRecord{}]}} =
+               Domain.reserve_budget(run, hold(run, epoch, 6_000), machinery())
+
+      # Read again, it is refused: 6_000 more would pass the limit.
+      assert {:error, %Ash.Error.Invalid{errors: [%AshAgent.Run.BudgetExhausted{}]}} =
+               Domain.reserve_budget(reload(run), hold(run, epoch, 6_000), machinery())
+
+      assert %{budget_reserved: 6_000, budget_spent: 0} = reload(run)
+    end
+
+    test "a worker whose lease was taken over holds nothing, and what its call used is still recorded",
+         %{nurse: nurse} do
+      first = start!(nurse) |> claimed!()
+      {:ok, held} = AshAgent.Run.Budget.reserve(first, machinery())
+
+      expire_lease!(first)
+      Domain.recover_run!(reload(first), machinery())
+      second = claimed!(first)
+
+      # The first worker, still on its old lease, cannot hold anything more.
+      assert {:error, :superseded} = AshAgent.Run.Budget.reserve(first, machinery())
+
+      # The second lease releases the first's hold when it takes its own.
+      assert {:ok, second} = AshAgent.Run.Budget.reserve(second, machinery())
+      assert second.budget_holds == %{"#{first.id}:#{second.lease_epoch}" => 10_000}
+
+      # The first call still settles: what it used is recorded, and the second's hold stays.
+      AshAgent.Run.Budget.settle(held, 30, machinery())
+
+      assert %{budget_spent: 30, budget_reserved: 10_000, budget_holds: holds} = reload(first)
+      assert Map.keys(holds) == ["#{first.id}:#{second.lease_epoch}"]
+    end
+
+    test "a run with nothing left waits on its budget, with no model call, until it is extended",
+         %{nurse: nurse} do
+      ScriptedModel.script!([{:text, ~s({"missing": 0})}])
+      run = start!(nurse) |> set_budget!(budget_limit: 48, budget_spent: 48)
+
+      assert {:ok, :waiting} = step(run)
+
+      assert %{status: :waiting, blocked_on: :budget, error_code: "token_budget"} =
+               reload(run)
+
+      refute needs_step?(run)
+      assert ScriptedModel.requests() == []
+
+      assert %{status: :queued, blocked_on: nil, error_code: nil, budget_limit: 1_048} =
+               Domain.extend_run!(reload(run), 1_000, machinery())
+
+      assert needs_step?(run)
+      assert {:ok, :completed} = step(run)
+      assert %{budget_spent: 96, budget_reserved: 0} = reload(run)
+    end
+
+    test "a call that uses more than was left is recorded; the run then waits on its budget",
+         %{nurse: nurse} do
+      Application.put_env(:ash_agent, :check_reader_output, :integer)
+      ScriptedModel.script!([{:text, "many"}, {:text, "7"}])
+      run = start!(nurse) |> set_budget!(budget_limit: 40)
+
+      # The repair turn queues the run; the call used 48 of 40.
+      assert {:ok, :queued} = step(run)
+      assert %{budget_spent: 48, budget_reserved: 0} = reload(run)
+
+      assert {:ok, :waiting} = step(run)
+      assert %{status: :waiting, blocked_on: :budget} = reload(run)
+      assert length(ScriptedModel.requests()) == 1
+    end
+
+    test "extending a running run raises its limit; a finished run cannot be extended",
+         %{nurse: nurse} do
+      ScriptedModel.script!([{:text, ~s({"missing": 0})}])
+      run = start!(nurse) |> claimed!()
+
+      assert %{status: :running, budget_limit: 10_500} =
+               Domain.extend_run!(run, 500, machinery())
+
+      Domain.request_run_cancel!(reload(run), actor: nurse)
+
+      assert {:error, %Ash.Error.Invalid{} = error} =
+               Domain.extend_run(reload(run), 500, machinery())
+
+      assert Exception.message(error) =~ "only an unfinished run's budget can be extended"
+    end
+  end
+
   describe "cancelling" do
     test "cancels the run's tool calls that have not started; what ran stays", %{nurse: nurse} do
       ScriptedModel.script!([
