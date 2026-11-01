@@ -24,4 +24,8 @@ defmodule AshAgent.Test.Run do
     invocation(AshAgent.Test.Invocation)
     runtime(AshAgent.Test.Runtime)
   end
+
+  changes do
+    change AshAgent.Test.Run.SeesSubject, on: [:create]
+  end
 end

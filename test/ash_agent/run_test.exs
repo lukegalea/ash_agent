@@ -44,6 +44,9 @@ defmodule AshAgent.RunTest do
     Domain.start_run!(@agent, input, actor: nurse)
   end
 
+  defp about(record),
+    do: %{subject_type: inspect(record.__struct__), subject_id: record.id}
+
   defp step(run), do: Stepper.step(Run, run.id, machinery())
   defp reload(run), do: Domain.get_run!(run.id)
 
@@ -124,6 +127,59 @@ defmodule AshAgent.RunTest do
 
       assert run.executing_principal ==
                %{type: :automation, id: "intake", on_behalf_of: nurse.id, agent: @agent}
+    end
+  end
+
+  describe "a run about a record" do
+    setup do
+      published!()
+
+      clinician =
+        Domain.register_clinician!(%{
+          name: "SYNTHETIC Dana Reyes",
+          license_number: "RN-#{System.unique_integer([:positive])}"
+        })
+
+      %{clinician: clinician}
+    end
+
+    test "names the record, and leaves it for the host's changes on start",
+         %{nurse: nurse, clinician: clinician} do
+      run =
+        Domain.start_run!(@agent, "SYNTHETIC: check RN-1", about(clinician), actor: nurse)
+
+      assert {run.subject_type, run.subject_id} == {"AshAgent.Test.Clinician", clinician.id}
+      assert_received {:start_subject, %AshAgent.Test.Clinician{id: id}}
+      assert id == clinician.id
+    end
+
+    test "is refused when the record is not one the actor can read", %{nurse: nurse} do
+      missing = %{subject_type: "AshAgent.Test.Clinician", subject_id: Ash.UUID.generate()}
+
+      assert {:error, %Ash.Error.Invalid{} = error} =
+               Domain.start_run(@agent, "SYNTHETIC: check RN-1", missing, actor: nurse)
+
+      assert Exception.message(error) =~ "is not a record the actor can read"
+      assert Ash.read!(Run) == []
+    end
+
+    test "is refused when it names half a record, or no resource", %{
+      nurse: nurse,
+      clinician: clinician
+    } do
+      for {input, message} <- [
+            {%{subject_id: clinician.id}, "is required with subject_id"},
+            {%{subject_type: "AshAgent.Test.Clinician"}, "is required with subject_type"},
+            {%{subject_type: "AshAgent.Test.NoSuchThing", subject_id: clinician.id},
+             "is not an Ash resource with a single primary key"}
+          ] do
+        assert {:error, %Ash.Error.Invalid{} = error} =
+                 Domain.start_run(@agent, "SYNTHETIC: check RN-1", input, actor: nurse)
+
+        assert Exception.message(error) =~ message
+      end
+
+      assert Ash.read!(Run) == []
     end
   end
 
