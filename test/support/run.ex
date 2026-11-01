@@ -6,6 +6,9 @@ defmodule AshAgent.Test.Run do
   The test host's agent run resource: the `AshAgent.Run` fragment on a plain
   `Ash.Resource` over Postgres, with no tenancy, policies, audit or triggers. Tests take
   steps themselves, with `AshAgent.Run.Stepper.step/3`.
+
+  Every update is under `optimistic_lock(:revision)`, as on a host that locks every
+  write to a row: a step must carry on from the run as its last write left it.
   """
 
   use Ash.Resource,
@@ -18,6 +21,10 @@ defmodule AshAgent.Test.Run do
     repo AshAgent.Test.Repo
   end
 
+  attributes do
+    attribute :revision, :integer, allow_nil?: false, default: 0, public?: true
+  end
+
   run do
     agent_version(AshAgent.Test.AgentVersion)
     step(AshAgent.Test.Step)
@@ -27,5 +34,6 @@ defmodule AshAgent.Test.Run do
 
   changes do
     change AshAgent.Test.Run.SeesSubject, on: [:create]
+    change optimistic_lock(:revision), on: [:update]
   end
 end
