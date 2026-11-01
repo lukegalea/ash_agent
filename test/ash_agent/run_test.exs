@@ -18,6 +18,7 @@ defmodule AshAgent.RunTest do
   @agent "clinic.check_reader"
   @record "credential_check_record"
   @read "credential_check_read"
+  @in_run "checks_in_run"
 
   setup do
     on_exit(fn ->
@@ -203,7 +204,7 @@ defmodule AshAgent.RunTest do
       assert request.caller == "run:#{run.id}:1"
 
       assert Enum.sort(request.tools) ==
-               Enum.sort([@read, @record, "credential_check_record_reviewed"])
+               Enum.sort([@read, @in_run, @record, "credential_check_record_reviewed"])
     end
 
     test "a governed call is an invocation the run waits for; its recorded result is what the model reads",
@@ -365,6 +366,56 @@ defmodule AshAgent.RunTest do
       assert invocations(run) == []
 
       assert {:ok, :completed} = step(run)
+    end
+
+    test "a target its domain exposes as an ash_ai tool is offered as that tool",
+         %{nurse: nurse} do
+      Ash.Seed.seed!(CredentialCheck, %{licence_number: "RN-IN-RUN"})
+      ScriptedModel.script!([{:tools, [{"call_r", @in_run, %{}}]}, {:text, ~s({"seen": 1})}])
+      run = start!(nurse)
+
+      assert {:ok, :queued} = step(run)
+
+      [request | _] = ScriptedModel.requests()
+      spec = Enum.find(request.specs, &(&1.name == @in_run))
+      assert spec.description =~ "as an agent run sees them"
+      # The domain shows the action's inputs and none of the query controls.
+      refute Map.has_key?(
+               spec.parameter_schema["properties"] || spec.parameter_schema[:properties],
+               :filter
+             )
+
+      assert "credential_check_read" in request.tools
+
+      # The read ran in the loop with the run in its context.
+      assert [%{role: :assistant}, %{role: :tool, parts: [result]}] = steps(run)
+      assert result["content"] =~ "RN-IN-RUN"
+      assert invocations(run) == []
+    end
+
+    test "a read run again after its worker died runs with the run in its context",
+         %{nurse: nurse} do
+      Ash.Seed.seed!(CredentialCheck, %{licence_number: "RN-IN-RUN"})
+      ScriptedModel.script!([{:tools, [{"call_r", @in_run, %{}}]}, {:text, ~s({"seen": 1})}])
+      run = start!(nurse)
+
+      # The worker dies after the model's call is recorded, before the read's result is.
+      Application.put_env(:ash_agent, :die_reading_in_run, true)
+      on_exit(fn -> Application.delete_env(:ash_agent, :die_reading_in_run) end)
+      assert catch_exit(step(run)) == :worker_killed
+      assert [%{role: :assistant}] = steps(run)
+
+      expire_lease!(run)
+      assert %{status: :queued} = Domain.recover_run!(reload(run), machinery())
+      assert {:ok, :completed} = step(run)
+
+      assert [%{role: :assistant}, %{role: :tool, parts: [result]}, %{role: :assistant}] =
+               steps(run)
+
+      assert result["content"] =~ "RN-IN-RUN"
+      refute result["content"] =~ "only inside an agent run"
+      # One model call for the turn that called the read, one for the answer.
+      assert length(ScriptedModel.requests()) == 2
     end
 
     test "a pinned version whose tools drifted fails the run closed, with no model call",

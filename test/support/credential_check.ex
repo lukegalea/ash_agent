@@ -25,7 +25,11 @@ defmodule AshAgent.Test.CredentialCheck do
     * `:archive` is declared nowhere, so it cannot be invoked.
 
   `:read` is declared read-only and writes nowhere outside, so an agent run reads checks
-  inside its tool loop.
+  inside its tool loop. `:in_run` is the same read, answering only inside a run (the
+  run's id in the action context), as a host's read that guards what reaches a model
+  would; the domain offers it as the ash_ai tool `checks_in_run`. Set
+  `config :ash_agent, :die_reading_in_run, true` and its next read exits the process
+  reading, as a worker killed between the model's call and its result.
 
   A check is visible to everyone unless it is `restricted_to` one person, such as a
   check still under review: then only that person reads it.
@@ -46,6 +50,14 @@ defmodule AshAgent.Test.CredentialCheck do
 
   effects do
     action :read,
+      kind: :read,
+      read_only?: true,
+      destructive?: false,
+      idempotent?: true,
+      open_world?: false,
+      intent: :inspect
+
+    action :in_run,
       kind: :read,
       read_only?: true,
       destructive?: false,
@@ -125,6 +137,25 @@ defmodule AshAgent.Test.CredentialCheck do
 
   actions do
     defaults [:read]
+
+    read :in_run do
+      description "Credential checks, read only inside an agent run."
+
+      prepare fn query, _context ->
+        case query.context do
+          %{ash_agent: %{run_id: run_id}} when is_binary(run_id) ->
+            if Application.get_env(:ash_agent, :die_reading_in_run) do
+              Application.delete_env(:ash_agent, :die_reading_in_run)
+              exit(:worker_killed)
+            end
+
+            query
+
+          _outside_a_run ->
+            Ash.Query.add_error(query, "checks are read here only inside an agent run")
+        end
+      end
+    end
 
     create :record do
       accept [:licence_number, :clinician_name]

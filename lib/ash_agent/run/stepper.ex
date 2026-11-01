@@ -19,8 +19,9 @@ defmodule AshAgent.Run.Stepper do
        any model call. A governed call's invocation is read by its key: a finished one
        gives its recorded result (its effect is never run again); an open one makes the
        run wait; a missing one (the worker died before it was requested) is requested
-       now, and the run waits. An in-loop read is run again. Results are recorded as
-       steps under the fence.
+       now, and the run waits. An in-loop read is run again, as the executing actor and
+       with the context the loop gives its tools. Results are recorded as steps under the
+       fence.
     4. **Model call**, with no transaction open. What is left of the token budget is
        held for it first (`AshAgent.Run.Budget.reserve/2`); when nothing is, the run
        waits on its budget (`"token_budget"`) and no call is made. Then
@@ -208,7 +209,7 @@ defmodule AshAgent.Run.Stepper do
   defp settle(call, acc, run, toolset, actor, seqs, opts) do
     case Toolset.lookup(toolset, call.name) do
       %{in_loop?: true} = tool ->
-        add_result(acc, call.id, Toolset.run_read(tool, call, actor, opts[:tenant]))
+        add_result(acc, call.id, Toolset.run_read(tool, call, tool_context(run, actor, opts)))
 
       %{in_loop?: false} = tool ->
         seq = Map.get(seqs, call.id)
@@ -285,7 +286,7 @@ defmodule AshAgent.Run.Stepper do
             max_iterations: 1,
             actor: actor,
             tenant: opts[:tenant],
-            context: %{ash_agent: %{run_id: run.id}}
+            context: tool_context(run, actor, opts).context
           )
 
         reserved(run, opts, fn run ->
@@ -488,6 +489,11 @@ defmodule AshAgent.Run.Stepper do
     do: record(run, %{outcome: :failed, failure_class: class, error_code: code}, opts)
 
   # --- helpers -------------------------------------------------------------
+
+  # What a tool is run with, in the loop and when a step runs an in-loop read again: the
+  # executing actor, the run's tenant, and the run in the action context.
+  defp tool_context(run, actor, opts),
+    do: %{actor: actor, tenant: opts[:tenant], context: %{ash_agent: %{run_id: run.id}}}
 
   defp around(run, fun) do
     runtime = Info.runtime(run.__struct__)
