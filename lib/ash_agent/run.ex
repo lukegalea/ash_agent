@@ -83,7 +83,11 @@ defmodule AshAgent.Run do
     * `start` (create): pins the agent's latest published version, asks the host who
       the run executes as (`c:AshAgent.ExecutionIdentity.run_principal/3`, which also
       decides whether the actor may start that agent), sets the deadline and token
-      budget from the version's limits, and enqueues the first step.
+      budget from the version's limits, and enqueues the first step. A run may name the
+      record it is about (`subject_type`, `subject_id`): the actor must be able to read
+      it, and the record is left in the changeset context (`ash_agent.subject`) for the
+      host's own changes, as an invocation's subject is (see
+      `AshAgent.Run.Changes.Start`).
     * `claim_step`, `record_step`: the step's own writes, above.
     * `step` (generic, no transaction): the `:step` trigger's action.
     * `recover` (update): queues again a `running` run whose lease expired: its worker
@@ -135,7 +139,7 @@ defmodule AshAgent.Run do
 
     create :start do
       description "Start a run of an agent's latest published version."
-      accept [:input, :run_key, :origin]
+      accept [:input, :run_key, :origin, :subject_type, :subject_id]
 
       argument :agent, :string do
         description "The agent's key."
@@ -262,6 +266,19 @@ defmodule AshAgent.Run do
       default :direct
       constraints one_of: [:direct, :assistant, :bpmn, :acp, :eval, :schedule]
       description "What started the run."
+    end
+
+    attribute :subject_type, :string do
+      public? true
+      constraints max_length: 255
+
+      description "The resource of the record the run is about, as its module name, when it is about one."
+    end
+
+    attribute :subject_id, :string do
+      public? true
+      constraints max_length: 255
+      description "The primary key of the record the run is about."
     end
 
     attribute :agent_key, :string do

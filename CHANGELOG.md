@@ -16,6 +16,11 @@ Nothing has been released yet.
 
 ### Features:
 
+- A run can name the record it is about: `AshAgent.Run`'s `start` accepts `subject_type` (a resource's module name)
+  and `subject_id`, both or neither. The starter must be able to read the record (one they cannot is refused like one
+  that does not exist), and it is left in the changeset context as `ash_agent.subject` for the host's changes on
+  `start`, as an invocation's `request` leaves its subject, so a host can seal the run's content under the subject's
+  erasure key.
 - Durable agent runs: `AshAgent.Run`, a fragment for a run of a pinned agent version, and `AshAgent.Step`, its
   append-only journal (one row per message). One `:step` job is one model call: `claim_step` takes the lease under
   `optimistic_lock(:lease_epoch)` (and checks the deadline, drift, the step and tool-call limits and the token
