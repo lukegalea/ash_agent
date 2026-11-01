@@ -34,16 +34,26 @@ defmodule AshAgent.Run.Journal do
     end
   end
 
-  @doc "The conversation `input` and `steps` make, as ReqLLM messages."
-  @spec messages(String.t() | nil, [map()]) :: [ReqLLM.Message.t()]
+  @doc """
+  The conversation `input` and `steps` make, as ReqLLM messages, or `:unreadable` when
+  any of it can no longer be read: `input` is neither text nor nil, or a step's `parts`
+  is not a list. A host that seals them (`value/3`) reads them as something else once
+  their key is gone, as when the record a run is about has been erased.
+  """
+  @spec messages(String.t() | nil, [map()]) :: {:ok, [ReqLLM.Message.t()]} | :unreadable
   def messages(input, steps) do
-    first = if is_binary(input) and input != "", do: [Context.user(input)], else: []
+    if (is_nil(input) or is_binary(input)) and Enum.all?(steps, &is_list(&1.parts)) do
+      first = if is_binary(input) and input != "", do: [Context.user(input)], else: []
 
-    first ++
-      Enum.flat_map(steps, fn
-        %{role: :user, parts: parts} -> [Context.user(Transcript.text(parts))]
-        %{parts: parts} -> Transcript.from_parts(parts)
-      end)
+      {:ok,
+       first ++
+         Enum.flat_map(steps, fn
+           %{role: :user, parts: parts} -> [Context.user(Transcript.text(parts))]
+           %{parts: parts} -> Transcript.from_parts(parts)
+         end)}
+    else
+      :unreadable
+    end
   end
 
   @doc "The `seq` of the step that made each tool call, by call id."

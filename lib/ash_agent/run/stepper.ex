@@ -14,7 +14,10 @@ defmodule AshAgent.Run.Stepper do
        (`c:AshAgent.ExecutionIdentity.actor_for/1` with the run), the toolset
        (`AshAgent.Run.Toolset`) and the conversation (`AshAgent.Run.Journal`). A
        principal with no authority now fails the run as `:denied`, with `error_code`
-       `"no_authority"` (followed by the host's reason when it is an atom).
+       `"no_authority"` (followed by the host's reason when it is an atom). A
+       conversation that can no longer be read (`AshAgent.Run.Journal.messages/2`: a
+       host that seals it has erased it) fails the run as `:permanent`, with
+       `"journal_unreadable"`, before any model call.
     3. **Tool results**: a model turn whose calls have no result yet gets them before
        any model call. A governed call's invocation is read by its key: a finished one
        gives its recorded result (its effect is never run again); an open one makes the
@@ -156,8 +159,10 @@ defmodule AshAgent.Run.Stepper do
         toolset = Toolset.build(version, actor, opts[:tenant])
 
         with {:ok, steps} <- Journal.steps(run, opts) do
-          messages = Journal.messages(Journal.value(run, :input, opts), steps)
-          results(run, version, toolset, actor, messages, steps, opts)
+          case Journal.messages(Journal.value(run, :input, opts), steps) do
+            {:ok, messages} -> results(run, version, toolset, actor, messages, steps, opts)
+            :unreadable -> fail(run, :permanent, "journal_unreadable", opts)
+          end
         end
 
       {:error, reason} ->
