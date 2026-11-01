@@ -86,8 +86,9 @@ row has been decided, and a change on the action that sets `outcome` from it.
 
 ## `:step` and `:recover` on a run resource
 
-`start`, every `record_step` that leaves a run queued or waiting, `recover`, and `AshAgent.Run.Changes.Wake` on the
-invocation resource enqueue `:step` in their own transaction. Its scheduler is the sweep for a run whose wake-up was
+`start`, every `record_step` that leaves a run queued, `recover`, `extend` and `AshAgent.Run.Changes.Wake` on the
+invocation resource enqueue `:step` in their own transaction; a run left waiting has no job until what it waits on
+wakes it. Its scheduler is the sweep for a run whose wake-up was
 lost. `:recover` queues again a run whose worker died holding the lease; nothing enqueues it but its sweep.
 
 ```elixir
