@@ -32,6 +32,9 @@ Nothing has been released yet.
 - `complete_external` accepts `result`: what handed-on work came back with (a person's answer, a callback's payload),
   recorded on a row that succeeds and read by a run's next step as the tool call's result. A failed outcome and a late
   callback on a final row record none.
+- A run offers a toolset target its domain (or its resource) exposes as an ash_ai `tool` under that tool's name,
+  description, `action_parameters`, `load` and `select`, so a read can hide ash_ai's filter and sort controls from a
+  model. An in-loop read run again on resume has the run in its action context, as it has in the loop.
 - Durable agent runs: `AshAgent.Run`, a fragment for a run of a pinned agent version, and `AshAgent.Step`, its
   append-only journal (one row per message). One `:step` job is one model call: `claim_step` takes the lease under
   `optimistic_lock(:lease_epoch)` (and checks the deadline, drift, the step and tool-call limits and the token

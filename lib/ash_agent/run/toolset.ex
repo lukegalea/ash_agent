@@ -17,7 +17,10 @@ defmodule AshAgent.Run.Toolset do
 
   A call naming a tool the step did not offer is refused in the loop.
 
-  A tool's name is its resource's last module segment and its action, in snake case:
+  A target its domain (or its resource) exposes as an ash_ai `tool` is offered as that
+  tool: its name, its description and the query controls it shows (`action_parameters`,
+  `load`, `select`) are the ones declared there. Any other target is offered with ash_ai's
+  defaults, named after its resource's last module segment and its action, in snake case:
   `CredentialCheck.record` is `credential_check_record`.
   """
 
@@ -57,11 +60,17 @@ defmodule AshAgent.Run.Toolset do
     }
   end
 
-  @doc "The tool's name for the target `resource.action`."
+  @doc "The tool's name for the target `resource.action`: the declared tool's, or the default."
   @spec tool_name(Ash.Resource.t(), atom()) :: String.t()
   def tool_name(resource, action) do
-    short = resource |> Module.split() |> List.last() |> Macro.underscore()
-    "#{short}_#{action}"
+    case declared(resource, action) do
+      %AshAi.Tool{name: name} ->
+        to_string(name)
+
+      nil ->
+        short = resource |> Module.split() |> List.last() |> Macro.underscore()
+        "#{short}_#{action}"
+    end
   end
 
   @doc "The tool named `name`, or nil."
@@ -100,10 +109,14 @@ defmodule AshAgent.Run.Toolset do
     end
   end
 
-  @doc "Runs an in-loop read for `call` as `actor`, returning the result's text."
-  @spec run_read(tool(), map(), term(), term()) :: String.t()
-  def run_read(%{in_loop?: true} = tool, call, actor, tenant) do
-    case tool.callback.(decode(call.arguments), %{actor: actor, tenant: tenant, context: %{}}) do
+  @doc """
+  Runs an in-loop read for `call` again, outside the loop, returning the result's text.
+  `context` is the tool context the loop gives its tools (`actor`, `tenant`, `context`),
+  so the read runs as it would have in the loop.
+  """
+  @spec run_read(tool(), map(), map()) :: String.t()
+  def run_read(%{in_loop?: true} = tool, call, context) do
+    case tool.callback.(decode(call.arguments), context) do
       {:ok, content, _raw} -> content
       {:error, content} -> content
     end
@@ -114,14 +127,16 @@ defmodule AshAgent.Run.Toolset do
     in_loop? = action.type == :read and not target.effect.open_world?
 
     {req_llm, callback} =
-      AshAi.Tools.build(%AshAi.Tool{
+      target.resource
+      |> declared(action.name)
+      |> Kernel.||(%AshAi.Tool{
         name: tool_name(target.resource, action.name),
         resource: target.resource,
-        action: action,
-        domain: Ash.Resource.Info.domain(target.resource),
         arguments: [],
         load: []
       })
+      |> Map.merge(%{action: action, domain: Ash.Resource.Info.domain(target.resource)})
+      |> AshAi.Tools.build()
 
     %{
       name: req_llm.name,
@@ -131,6 +146,16 @@ defmodule AshAgent.Run.Toolset do
       callback: callback,
       req_llm: req_llm
     }
+  end
+
+  # The ash_ai tool the resource's domain, or the resource itself, declares for `action`.
+  defp declared(resource, action) do
+    domain = Ash.Resource.Info.domain(resource)
+    declared = if domain, do: AshAi.Info.tools(domain), else: []
+
+    Enum.find(declared ++ AshAi.Info.tools(resource), fn tool ->
+      tool.resource == resource and tool.action == action
+    end)
   end
 
   defp offered?(%{in_loop?: false}, _actor, _tenant), do: true

@@ -32,13 +32,21 @@ defmodule AshAgent.Test.ScriptedModel do
     :ok
   end
 
-  @doc "The requests made so far, oldest first: `%{messages, tools, caller}`."
+  @doc """
+  The requests made so far, oldest first: `%{messages, tools, specs, caller}`, where
+  `tools` are the offered tools' names and `specs` each one's name, description and
+  parameter schema.
+  """
   def requests, do: Agent.get(__MODULE__, & &1.requests)
 
   def stream_text(model, messages, opts) do
     request = %{
       messages: messages,
       tools: opts |> Keyword.get(:tools, []) |> Enum.map(& &1.name),
+      specs:
+        opts
+        |> Keyword.get(:tools, [])
+        |> Enum.map(&Map.take(&1, [:name, :description, :parameter_schema])),
       caller: opts[:caller]
     }
 

@@ -16,6 +16,7 @@ defmodule AshAgent.Test.Agents.CheckReader do
     model_profile: "in_zone",
     tools: [
       {AshAgent.Test.CredentialCheck, :read},
+      {AshAgent.Test.CredentialCheck, :in_run},
       {AshAgent.Test.CredentialCheck, :record},
       {AshAgent.Test.CredentialCheck, :record_reviewed}
     ],

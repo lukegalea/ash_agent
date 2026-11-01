@@ -10,7 +10,14 @@ defmodule AshAgent.Test.Domain do
   that nothing in the package depends on any particular host.
   """
 
-  use Ash.Domain, validate_config_inclusion?: false
+  use Ash.Domain, validate_config_inclusion?: false, extensions: [AshAi]
+
+  tools do
+    tool :checks_in_run, AshAgent.Test.CredentialCheck, :in_run do
+      description "SYNTHETIC: the clinic's credential checks, as an agent run sees them."
+      action_parameters([])
+    end
+  end
 
   resources do
     resource AshAgent.Test.Clinician do
