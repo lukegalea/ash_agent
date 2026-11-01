@@ -16,6 +16,9 @@ Nothing has been released yet.
 
 ### Features:
 
+- `complete_external` accepts `result`: what handed-on work came back with (a person's answer, a callback's payload),
+  recorded on a row that succeeds and read by a run's next step as the tool call's result. A failed outcome and a late
+  callback on a final row record none.
 - Durable agent runs: `AshAgent.Run`, a fragment for a run of a pinned agent version, and `AshAgent.Step`, its
   append-only journal (one row per message). One `:step` job is one model call: `claim_step` takes the lease under
   `optimistic_lock(:lease_epoch)` (and checks the deadline, drift, the step and tool-call limits and the token

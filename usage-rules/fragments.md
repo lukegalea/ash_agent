@@ -140,6 +140,11 @@ Which path a claimed row takes depends on the target's effects declaration:
     a person: `request_resolution` asks, and `apply_resolution` applies `:succeeded`, `:failed` or `:retry`. Attach a
     change to `request_resolution` that opens your task, and one to `apply_resolution` that sets its `outcome` from the
     decided task.
+18. Work a person does (answering an agent's question, say) is handed-on work: a target that returns an
+    `AshAgent.Invocation.Dispatch` leaves its row `dispatched`, with no lease and no job, until `deadline_at`. Open the
+    person's task in a change on `dispatch`, so it commits with the row, and complete the row from the decided task
+    with `complete_external`, passing the answer as `result`: a run's next step reads it as the tool call's result. A
+    `result` is recorded only on a row that succeeds now.
 
 ### What you add on the resource
 

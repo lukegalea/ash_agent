@@ -106,8 +106,9 @@ defmodule AshAgent.Invocation do
     * `requeue` (update): makes an `executing` row whose lease expired `ready` again,
       only when running its target again cannot repeat its effect.
     * `complete_external` (update): records the outcome of a `dispatched` or
-      `outcome_unknown` row from outside: a callback, or a `reconcile_with` lookup. On
-      a final row it records the callback in `evidence` and changes nothing else.
+      `outcome_unknown` row from outside: a callback, or a `reconcile_with` lookup, with
+      what the work came back with as `result` when it succeeded. On a final row it
+      records the callback in `evidence` and changes nothing else.
     * `request_resolution` and `apply_resolution` (updates): ask a person to settle an
       `outcome_unknown` row, and apply what they decided: `:succeeded`, `:failed` or
       `:retry`. As with `apply_decision`, the outcome arrives as an argument, set by a
@@ -346,10 +347,11 @@ defmodule AshAgent.Invocation do
       description """
       Record the outcome of work done outside: a callback, or a `reconcile_with` lookup.
       A callback for a row that is already final is kept as evidence and changes nothing
-      else.
+      else. `result` is what the work came back with (a person's answer, say): recorded
+      on a row that succeeds, ignored otherwise.
       """
 
-      accept []
+      accept [:result]
       require_atomic? false
 
       argument :outcome, :atom, allow_nil?: false, constraints: [one_of: [:succeeded, :failed]]
