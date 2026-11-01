@@ -100,6 +100,7 @@ oban do
       queue :agents
       scheduler_cron "* * * * *"
       max_attempts 3
+      worker_opts unique: [period: :infinity, states: [:available, :scheduled, :retryable]]
       use_tenant_from_record? true
       actor_persister :none
       default_actor MyClinic.JobRunner.actor()
@@ -131,6 +132,10 @@ end
    them are separate, so no transaction or row lock is held across the call. ash_oban does not re-check `where`
    before a generic action runs; the step reads the run with `needs_step` and claims it, and a job with nothing to do
    ends as `:skipped` without a model call.
-2. **`:recover` keeps ash_oban's default lock**: it is a plain database transition.
-3. The same rules as for invocations: `actor_persister :none`, `use_tenant_from_record? true`, a `scheduler_cron`
+2. **`:step` is unique while a job waits, not while one runs.** ash_oban's default (`states: :incomplete`) counts
+   the executing job, so a step whose tools were in-loop reads, which records the run queued from inside its own job,
+   would have its next job dropped and wait for the sweep. Leave `:executing` out of the unique states; the claim
+   decides between two jobs, and the loser ends as `:skipped` before any model call.
+3. **`:recover` keeps ash_oban's default lock**: it is a plain database transition.
+4. The same rules as for invocations: `actor_persister :none`, `use_tenant_from_record? true`, a `scheduler_cron`
    kept on purpose, job arguments carrying the row's id only.
