@@ -115,6 +115,21 @@ defmodule AshAgent.Invocation do
       change the host attaches.
     * `retry` (update): makes a row that `failed` with `:transient` `ready` again, with
       the same key and arguments.
+    * `simulate` (update): answers a ready row of a run that is not live from the run's
+      fixtures, without running its target; see below.
+
+  ## Invocations of a run that is not live
+
+  A host that names its run resource (`run` in the `invocation` section) gives each of a
+  run's tool calls the run's `mode`. A row whose mode is `:eval` or `:shadow` is never
+  claimed unless its target is a read that does not reach outside (`read_only` and not
+  `open_world` in its effects snapshot), which runs as usual. Any other target never
+  runs: `request` makes the row `ready` even when its declaration asks for an approval
+  (`approval_mode` still records that it would have), and the executor answers it with
+  `simulate`, from the run's `fixtures` for that target: `succeeded` with the fixture as
+  `result` and `simulated: true`, or `failed` (`:permanent`, `"no_fixture"`) when the
+  run has none. No lease is taken and nothing outside is called, so what such a run would
+  have done is a query over its invocations.
 
   Fencing uses a filter on the update and `optimistic_lock`, never an atomic update, so
   it works on hosts whose audit wrapper refuses atomics.
@@ -158,6 +173,7 @@ defmodule AshAgent.Invocation do
 
       transition :apply_resolution, from: :outcome_unknown, to: [:succeeded, :failed, :ready]
       transition :retry, from: :failed, to: :ready
+      transition :simulate, from: :ready, to: [:succeeded, :failed]
 
       transition :request_cancel,
         from: [:requested, :awaiting_approval, :ready],
@@ -440,6 +456,20 @@ defmodule AshAgent.Invocation do
       change AshAgent.Invocation.Changes.ApplyDecision
     end
 
+    update :simulate do
+      description """
+      Answer a ready row of a run that is not live from the run's fixture for its target,
+      given as `result`, without running it: `succeeded` with it, or `failed` when there
+      is none.
+      """
+
+      accept [:result]
+      require_atomic? false
+
+      change filter(expr(status == :ready and mode != :live))
+      change AshAgent.Invocation.Changes.Simulate
+    end
+
     update :request_cancel do
       description "Cancel a row that has not started; mark one that is executing."
       accept []
@@ -659,6 +689,17 @@ defmodule AshAgent.Invocation do
       sensitive? true
 
       description "What the target returned: the record it touched, or the value of a generic action."
+    end
+
+    attribute :simulated, :boolean do
+      allow_nil? false
+      public? true
+      default false
+
+      description """
+      True when `result` is a fixture: the row belongs to a run that is not live, and its
+      target never ran.
+      """
     end
 
     attribute :effect_system, :string, public?: true

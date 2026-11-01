@@ -92,8 +92,9 @@ defmodule AshAgent.ExecutionIdentity do
   may not start it. Called by `AshAgent.Run`'s `start`. The host decides who may start
   which agent (a start grant per agent key, say) and reads the version's publish-time
   `authority`: the requester runs as themselves, unless the publisher named an
-  automation principal to act for them. Only a host whose resources use `AshAgent.Run`
-  implements it.
+  automation principal to act for them. `context` carries the run's `mode` as `:mode`:
+  a host may run a run that is not live (`:eval`, `:shadow`) as an evaluation principal
+  instead. Only a host whose resources use `AshAgent.Run` implements it.
   """
   @callback run_principal(
               actor :: term(),

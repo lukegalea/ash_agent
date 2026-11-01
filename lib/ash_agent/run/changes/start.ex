@@ -15,6 +15,9 @@ defmodule AshAgent.Run.Changes.Start do
   where it decides whether the actor may start this agent at all: a refusal is an
   `AshAgent.Invocation.NoPrincipal` (forbidden), and no run is written.
 
+  The host is also told the run's `mode` (as `:mode` in the context it is given): a run
+  that is not live may execute as someone else, such as an evaluation principal.
+
   The run's deadline is the version's `deadline` (in seconds) from now, and its token
   budget the version's `token_budget`. A run with no key gets a fresh one. Its first
   step is enqueued in the same transaction.
@@ -122,7 +125,12 @@ defmodule AshAgent.Run.Changes.Start do
     identity = Info.execution_identity(changeset.resource)
 
     if function_exported?(identity, :run_principal, 3) do
-      case identity.run_principal(context.actor, version, Map.from_struct(context)) do
+      context =
+        context
+        |> Map.from_struct()
+        |> Map.put(:mode, Ash.Changeset.get_attribute(changeset, :mode))
+
+      case identity.run_principal(context.actor, version, context) do
         {:ok, principal} -> {:ok, principal}
         {:error, reason} -> {:error, NoPrincipal.exception(reason: reason)}
       end

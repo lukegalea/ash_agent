@@ -16,6 +16,14 @@ Nothing has been released yet.
 
 ### Features:
 
+- Runs that cause no effects. `AshAgent.Run` gains `mode` (`:live`, `:shadow`, `:eval`; default `:live`) and
+  `fixtures` (`%{"Resource.Module.action" => result}`), both accepted by `start`, and `run_principal/3` is given the
+  mode as `:mode` in its context. The `invocation` section takes an optional `run` (the host's run resource): a run's
+  tool call then takes the run's mode, read from the run row. A row that is not live is routed `ready` even when its
+  declaration asks for an approval (`approval_mode` still records it), is never claimed unless its target is a read
+  that stays inside (`AshAgent.Invocation.Changes.Claim.runs?/1`), and is answered by the new machinery action
+  `simulate` from the run's fixture: `succeeded` with `simulated: true` (new attribute) and the fixture as `result`,
+  or `failed` (`:permanent`, `"no_fixture"`). Hosts generate a migration for the three columns.
 - `record_step` enqueues the next `:step` job only when it leaves the run queued. A run it leaves waiting is woken by
   what it waits on (`AshAgent.Run.Changes.Wake`, `extend`) or found by the sweep; with `:executing` out of the unique
   states, enqueueing it too left a job that could only end as `:skipped`.

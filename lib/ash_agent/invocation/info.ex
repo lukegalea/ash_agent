@@ -13,6 +13,10 @@ defmodule AshAgent.Invocation.Info do
   @spec digest_key(Ash.Resource.t() | Spark.Dsl.t()) :: module() | nil
   def digest_key(resource), do: Spark.Dsl.Extension.get_opt(resource, [:invocation], :digest_key)
 
+  @doc "The host's run resource, whose runs' tool calls take their mode; nil when none."
+  @spec run(Ash.Resource.t() | Spark.Dsl.t()) :: Ash.Resource.t() | nil
+  def run(resource), do: Spark.Dsl.Extension.get_opt(resource, [:invocation], :run)
+
   @doc "How many claims a row gets before a transient failure is final."
   @spec max_attempts(Ash.Resource.t() | Spark.Dsl.t()) :: pos_integer()
   def max_attempts(resource),

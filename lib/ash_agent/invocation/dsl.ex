@@ -25,6 +25,14 @@ defmodule AshAgent.Invocation.Dsl do
         type: {:behaviour, AshAgent.DigestKey},
         doc: "The module implementing `AshAgent.DigestKey` for this resource."
       ],
+      run: [
+        type: :atom,
+        doc: """
+        The host's resource that includes `AshAgent.Run`. With it, a run's tool call takes
+        the run's `mode`, and a call of a run that is not live is answered from the run's
+        `fixtures` rather than run. Without it, every row is live.
+        """
+      ],
       max_attempts: [
         type: :pos_integer,
         default: 3,
