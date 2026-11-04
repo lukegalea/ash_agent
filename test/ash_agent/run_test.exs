@@ -184,6 +184,117 @@ defmodule AshAgent.RunTest do
     end
   end
 
+  describe "trying a draft" do
+    defp draft!(instructions) do
+      Domain.create_agent_draft!(%{
+        key: @agent,
+        instructions: instructions,
+        model_profile: "in_zone",
+        toolset: [],
+        limits: %{
+          max_steps: 3,
+          max_tool_calls: 3,
+          deadline: 600,
+          token_budget: 10_000,
+          max_repairs: 1
+        }
+      })
+    end
+
+    defp try!(nurse, draft, attrs \\ %{}) do
+      Domain.start_run!(
+        @agent,
+        "SYNTHETIC: what is missing for clinician RN-1?",
+        Map.merge(%{mode: :eval, agent_version_id: draft.id}, attrs),
+        actor: nurse
+      )
+    end
+
+    test "a run that is not live may pin a draft, and its steps carry on", %{nurse: nurse} do
+      published!()
+      draft = draft!("Answer in one line.")
+
+      run = try!(nurse, draft)
+      assert run.agent_version_id == draft.id
+
+      assert {:ok, :completed} = step(run)
+      assert [_one] = ScriptedModel.requests()
+    end
+
+    test "a live run cannot name its version", %{nurse: nurse} do
+      published!()
+      draft = draft!("Answer in one line.")
+
+      assert {:error, %Ash.Error.Invalid{} = error} =
+               Domain.start_run(@agent, "x", %{agent_version_id: draft.id}, actor: nurse)
+
+      assert Exception.message(error) =~ "only a run that is not live may name its version"
+    end
+
+    test "a version of another agent is refused", %{nurse: nurse} do
+      published!()
+
+      other =
+        Domain.create_agent_draft!(%{
+          key: "clinic.other",
+          instructions: "x",
+          model_profile: "in_zone",
+          toolset: [],
+          limits: %{}
+        })
+
+      assert {:error, %Ash.Error.Invalid{} = error} =
+               Domain.start_run(@agent, "x", %{mode: :eval, agent_version_id: other.id},
+                 actor: nurse
+               )
+
+      assert Exception.message(error) =~ "is not a version of #{@agent}"
+    end
+
+    test "variables are rendered into the instructions", %{nurse: nurse} do
+      published!()
+      draft = draft!("Check {{clinician}} against {{ board }}.")
+
+      run = try!(nurse, draft, %{variables: %{"clinician" => "RN-1", "board" => "Board A"}})
+      assert {:ok, :completed} = step(run)
+
+      [request] = ScriptedModel.requests()
+      system = for %{role: :system} = m <- request.messages, do: text(m)
+      assert Enum.join(system) =~ "Check RN-1 against Board A."
+    end
+
+    test "a variable with no value is refused before any run or model call", %{nurse: nurse} do
+      published!()
+      draft = draft!("Check {{clinician}} against {{board}}.")
+
+      assert {:error, %Ash.Error.Invalid{} = error} =
+               Domain.start_run(
+                 @agent,
+                 "x",
+                 %{mode: :eval, agent_version_id: draft.id, variables: %{"clinician" => "RN-1"}},
+                 actor: nurse
+               )
+
+      assert Exception.message(error) =~ "gives no value for board"
+      assert Ash.read!(Run) == []
+      assert ScriptedModel.requests() == []
+    end
+  end
+
+  describe "instruction variables" do
+    test "are named, checked and rendered" do
+      text = "Check {{clinician}} against {{ board }}, then {{clinician}} again."
+      assert Definition.variables(text) == ["clinician", "board"]
+      assert Definition.missing_variables(text, %{"board" => "A"}) == ["clinician"]
+
+      assert Definition.render(text, %{"clinician" => "RN-1", "board" => "A"}) ==
+               "Check RN-1 against A, then RN-1 again."
+
+      assert Definition.render("Keep {{unset}}.", %{}) == "Keep {{unset}}."
+      assert Definition.variables("No placeholders, just {braces}.") == []
+    end
+  end
+
   describe "a step" do
     test "an answer is cast to the output type and completes the run", %{nurse: nurse} do
       ScriptedModel.script!([{:text, ~s({"missing": 0})}])

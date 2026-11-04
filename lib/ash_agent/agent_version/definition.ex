@@ -85,14 +85,67 @@ defmodule AshAgent.AgentVersion.Definition do
     end)
   end
 
+  @variable ~r/\{\{\s*([a-z_][a-z0-9_]*)\s*\}\}/
+
+  @doc """
+  The variables an instructions text names, in order of first use: `{{name}}`, the name
+  lowercase letters, digits and underscores.
+  """
+  @spec variables(String.t() | nil) :: [String.t()]
+  def variables(nil), do: []
+
+  def variables(instructions),
+    do:
+      @variable
+      |> Regex.scan(instructions, capture: :all_but_first)
+      |> List.flatten()
+      |> Enum.uniq()
+
+  @doc """
+  The variables `instructions` names that `values` (a string-keyed map) does not give.
+  """
+  @spec missing_variables(String.t() | nil, map()) :: [String.t()]
+  def missing_variables(instructions, values),
+    do: Enum.reject(variables(instructions), &Map.has_key?(values || %{}, &1))
+
+  @doc """
+  `instructions` with each `{{name}}` replaced by its value in `values` (a string-keyed
+  map). A name `values` does not give is left as written; `missing_variables/2` says
+  which.
+  """
+  @spec render(String.t() | nil, map()) :: String.t() | nil
+  def render(nil, _values), do: nil
+
+  def render(instructions, values) do
+    Regex.replace(@variable, instructions, fn whole, name ->
+      case Map.fetch(values || %{}, name) do
+        {:ok, value} -> to_string(value)
+        :error -> whole
+      end
+    end)
+  end
+
   @doc """
   Whether a run pinned to `version` may take its next step: the version is published or
   retired, and no toolset target has drifted (`drift/1`). A drifted target is
   `AshAgent.AgentVersion.DefinitionDrift`, whose `reason` is `:definition_drift`; a
-  draft is `AshAgent.AgentVersion.NotPublished`.
+  draft is `AshAgent.AgentVersion.NotPublished`, unless `draft?: true`: a run that is not
+  live may pin a draft, to try it (`AshAgent.Run`).
   """
-  @spec check_pinned(map()) :: {:ok, map()} | {:error, Exception.t()}
-  def check_pinned(%{status: status} = version) when status in [:published, :retired] do
+  @spec check_pinned(map(), keyword()) :: {:ok, map()} | {:error, Exception.t()}
+  def check_pinned(version, opts \\ [])
+
+  def check_pinned(%{status: status} = version, _opts) when status in [:published, :retired],
+    do: check_drift(version)
+
+  def check_pinned(%{status: :draft} = version, draft?: true), do: check_drift(version)
+
+  def check_pinned(version, _opts),
+    do:
+      {:error,
+       NotPublished.exception(key: version.key, version: version.version, status: version.status)}
+
+  defp check_drift(version) do
     case drift(version) do
       [] ->
         {:ok, version}
@@ -102,11 +155,6 @@ defmodule AshAgent.AgentVersion.Definition do
          DefinitionDrift.exception(key: version.key, version: version.version, drifted: drifted)}
     end
   end
-
-  def check_pinned(version),
-    do:
-      {:error,
-       NotPublished.exception(key: version.key, version: version.version, status: version.status)}
 
   defp target_problems(entry) do
     entry = stringify_entry(entry)

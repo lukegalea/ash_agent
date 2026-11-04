@@ -58,6 +58,7 @@ defmodule AshAgent.Run.Stepper do
   require Ash.Query
   require Logger
 
+  alias AshAgent.AgentVersion.Definition
   alias AshAgent.Invocation.Failure
   alias AshAgent.Run.{Budget, Info, Journal, Output, Toolset}
 
@@ -275,7 +276,8 @@ defmodule AshAgent.Run.Stepper do
 
     case runtime.loop_options(version, run, caller) do
       {:ok, loop_opts} ->
-        fingerprint = AshAi.Transcript.fingerprint(version.instructions, toolset.tools)
+        instructions = Definition.render(version.instructions, run.variables)
+        fingerprint = AshAi.Transcript.fingerprint(instructions, toolset.tools)
 
         messages =
           if run.prompt_fingerprint in [nil, fingerprint],
@@ -286,7 +288,7 @@ defmodule AshAgent.Run.Stepper do
           Keyword.merge(loop_opts,
             tools: false,
             extra_tools: toolset.extra_tools,
-            system_prompt: fn _opts -> version.instructions end,
+            system_prompt: fn _opts -> instructions end,
             approve_tool_call: Toolset.approver(toolset),
             max_iterations: 1,
             actor: actor,

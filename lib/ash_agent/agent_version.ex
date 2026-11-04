@@ -60,7 +60,7 @@ defmodule AshAgent.AgentVersion do
 
   A run records the version's id and reads it again at each step through
   `AshAgent.AgentVersion.Definition.check_pinned/1`: the version must be published or
-  retired, and each toolset target must still resolve to the digest it had when the
+  retired (a run that is not live may pin a draft, to try it), and each toolset target must still resolve to the digest it had when the
   version was written. A target whose input schema or effects declaration has changed
   since is `AshAgent.AgentVersion.DefinitionDrift`, and the run fails closed rather than
   offer the model a tool that is not the one that was approved. Publishing a later
