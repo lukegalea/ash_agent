@@ -18,7 +18,8 @@ defmodule AshAgent.Test.Agents.CheckReader do
       {AshAgent.Test.CredentialCheck, :read},
       {AshAgent.Test.CredentialCheck, :in_run},
       {AshAgent.Test.CredentialCheck, :record},
-      {AshAgent.Test.CredentialCheck, :record_reviewed}
+      {AshAgent.Test.CredentialCheck, :record_reviewed},
+      {AshAgent.Test.CredentialCheck, :notify_board}
     ],
     limits: [
       max_steps: 6,

@@ -178,22 +178,23 @@ defmodule AshAgent.Run.Stepper do
     settled =
       messages
       |> AshAi.ToolLoop.pending_tool_calls()
-      |> Enum.reduce(%{results: [], invoke: [], open?: false}, fn call, acc ->
+      |> Enum.reduce(%{results: [], invoke: [], open?: false, tainted?: false}, fn call, acc ->
         settle(call, acc, run, toolset, actor, seqs, opts)
       end)
 
     result_steps = Enum.map(settled.results, &Journal.step(&1, nil))
+    taint = if settled.tainted?, do: %{tainted: true}, else: %{}
 
     cond do
       settled.invoke != [] or settled.open? ->
         record(
           run,
-          %{
+          Map.merge(taint, %{
             steps: result_steps,
             invocations: settled.invoke,
             outcome: :waiting,
             blocked_on: :tools
-          },
+          }),
           opts
         )
 
@@ -201,7 +202,7 @@ defmodule AshAgent.Run.Stepper do
         call_model(run, version, toolset, actor, messages, opts)
 
       true ->
-        case record_step(run, %{steps: result_steps, outcome: :running}, opts) do
+        case record_step(run, Map.merge(taint, %{steps: result_steps, outcome: :running}), opts) do
           {:ok, run} ->
             call_model(run, version, toolset, actor, messages ++ settled.results, opts)
 
@@ -227,7 +228,9 @@ defmodule AshAgent.Run.Stepper do
             }
 
           %{status: status} = row when status in @final_invocation ->
-            add_result(acc, call.id, content(row, opts))
+            acc
+            |> add_result(call.id, content(row, opts))
+            |> taint(row)
 
           _open ->
             %{acc | open?: true}
@@ -240,6 +243,15 @@ defmodule AshAgent.Run.Stepper do
 
   defp add_result(acc, call_id, content),
     do: %{acc | results: acc.results ++ [Journal.tool_result(call_id, content)]}
+
+  # A call that succeeded and may reach outside brought outside content into the
+  # conversation. An effects declaration that says nothing is read as open-world.
+  defp taint(acc, %{status: :succeeded, effects: effects}) do
+    inside? = (effects || %{})["open_world"] == false
+    if inside?, do: acc, else: %{acc | tainted?: true}
+  end
+
+  defp taint(acc, _row), do: acc
 
   defp request(tool, call, seq) do
     %{

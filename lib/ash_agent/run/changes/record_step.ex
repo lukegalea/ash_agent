@@ -24,6 +24,8 @@ defmodule AshAgent.Run.Changes.RecordStep do
       by what it waits on); a run that `failed` has its tool calls that have not started
       cancelled.
 
+  A step that took in a result from outside (`tainted`) marks the run `tainted?`.
+
   `outcome` moves the run: `:running` (it carries on: only messages are appended),
   `:queued`, `:waiting` (on `blocked_on`), `:completed` (with `output`) or `:failed`
   (with `failure_class` and `error_code`). The counters add up what the step did.
@@ -55,6 +57,7 @@ defmodule AshAgent.Run.Changes.RecordStep do
         prompt_fingerprint: arg.(:prompt_fingerprint) || data.prompt_fingerprint
       }
       |> Map.merge(state_attributes(outcome, changeset))
+      |> Map.merge(if arg.(:tainted), do: %{tainted?: true}, else: %{})
     )
     |> Ash.Changeset.after_action(fn changeset, run ->
       with :ok <- append(changeset, context, run, data.step_seq, steps),
