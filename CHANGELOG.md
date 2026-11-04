@@ -16,6 +16,10 @@ Nothing has been released yet.
 
 ### Features:
 
+- Taint. `AshAgent.Run` gains `tainted?` (default `false`): set once a call that reaches outside the application
+  (`open_world?`, or an effects snapshot that says nothing) has succeeded and answered the run, and never cleared. It
+  is recorded, not enforced, so a host can report or admit on it. `record_step` takes a `tainted` argument for it.
+  Hosts generate a migration for the column.
 - Runs that cause no effects. `AshAgent.Run` gains `mode` (`:live`, `:shadow`, `:eval`; default `:live`) and
   `fixtures` (`%{"Resource.Module.action" => result}`), both accepted by `start`, and `run_principal/3` is given the
   mode as `:mode` in its context. The `invocation` section takes an optional `run` (the host's run resource): a run's

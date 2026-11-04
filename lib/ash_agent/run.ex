@@ -106,6 +106,10 @@ defmodule AshAgent.Run do
 
   ## Runs that cause no effects
 
+  A run is `tainted?` once a call that reaches outside (`open_world?`) has answered it: the
+  answer is content its host did not write. In-loop reads and writes inside the
+  application never taint. Taint is recorded and never enforced here.
+
   A run started with `mode: :eval` (a suite case) or `:shadow` (a candidate beside live
   work) takes its steps and model calls like any run, and its in-loop reads run as its
   executing actor, but nothing it asks for has an effect. Each tool call is still an
@@ -227,6 +231,12 @@ defmodule AshAgent.Run do
       argument :tool_calls, :integer, allow_nil?: false, default: 0, constraints: [min: 0]
       argument :repairs, :integer, allow_nil?: false, default: 0, constraints: [min: 0]
       argument :prompt_fingerprint, :string
+
+      argument :tainted, :boolean do
+        description "Whether the step took in a result from outside (`tainted?`)."
+        allow_nil? false
+        default false
+      end
 
       change filter(expr(status == :running and lease_epoch == ^arg(:epoch)))
       change AshAgent.Run.Changes.RecordStep
@@ -411,6 +421,18 @@ defmodule AshAgent.Run do
                   ]
 
       description "Who the run's steps and tool calls run as (`AshAgent.ExecutionIdentity`)."
+    end
+
+    attribute :tainted?, :boolean do
+      allow_nil? false
+      public? true
+      default false
+
+      description """
+      Whether the run has taken in a result from outside: the answer to a call of a target
+      that reaches outside the application (`open_world?`). Set once, never cleared. It is
+      recorded, not enforced: a host reports it, or admits on it.
+      """
     end
 
     attribute :blocked_on, :atom do

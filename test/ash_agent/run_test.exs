@@ -204,7 +204,13 @@ defmodule AshAgent.RunTest do
       assert request.caller == "run:#{run.id}:1"
 
       assert Enum.sort(request.tools) ==
-               Enum.sort([@read, @in_run, @record, "credential_check_record_reviewed"])
+               Enum.sort([
+                 @read,
+                 @in_run,
+                 @record,
+                 "credential_check_record_reviewed",
+                 "credential_check_notify_board"
+               ])
     end
 
     test "a governed call is an invocation the run waits for; its recorded result is what the model reads",
@@ -621,6 +627,55 @@ defmodule AshAgent.RunTest do
 
       refute needs_step?(run)
       assert {:ok, :skipped} = step(run)
+    end
+  end
+
+  describe "taint" do
+    @notify "AshAgent.Test.CredentialCheck.notify_board"
+    @written "AshAgent.Test.CredentialCheck.record"
+
+    test "a run is tainted once a call that reaches outside has answered it, and no sooner",
+         %{nurse: nurse} do
+      ScriptedModel.script!([
+        {:tools, [record_call("call_a", "RN-1")]},
+        {:tools,
+         [
+           {"call_b", "credential_check_notify_board",
+            %{"input" => %{"licence_number" => "RN-1"}}}
+         ]},
+        {:text, ~s({"recorded": 1})}
+      ])
+
+      fixtures = %{@written => %{"value" => %{"id" => "c-1"}}, @notify => %{"value" => true}}
+      run = start_unlive!(nurse, :eval, fixtures)
+      refute run.tainted?
+
+      # A call that stays inside answers it: not tainted.
+      assert {:ok, :waiting} = step(run)
+      [inside] = invocations(run)
+      execute!(inside)
+      assert {:ok, :waiting} = step(run)
+      refute reload(run).tainted?
+
+      # The call that reaches outside is answered, and the next step records it.
+      [_inside, outside] = invocations(run)
+      execute!(outside)
+      assert {:ok, :completed} = step(run)
+      assert reload(run).tainted?
+    end
+
+    test "a run that never leaves the application is not tainted", %{nurse: nurse} do
+      ScriptedModel.script!([
+        {:tools, [record_call("call_a", "RN-1")]},
+        {:text, ~s({"recorded": 1})}
+      ])
+
+      run = start!(nurse)
+      assert {:ok, :waiting} = step(run)
+      [row] = invocations(run)
+      execute!(row)
+      assert {:ok, :completed} = step(run)
+      refute reload(run).tainted?
     end
   end
 
