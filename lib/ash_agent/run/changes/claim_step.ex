@@ -67,7 +67,7 @@ defmodule AshAgent.Run.Changes.ClaimStep do
       run.deadline_at && DateTime.compare(run.deadline_at, now) != :gt ->
         finish(changeset, :failed, failure_class: :timeout, error_code: "deadline_passed")
 
-      match?({:error, _}, Definition.check_pinned(version)) ->
+      match?({:error, _}, Definition.check_pinned(version, draft?: run.mode != :live)) ->
         finish(changeset, :failed, failure_class: :permanent, error_code: "definition_drift")
 
       reached?(run.step_count, limits["max_steps"]) ->

@@ -118,6 +118,10 @@ defmodule AshAgent.Run do
   "Invocations of a run that is not live"). The host is told the mode when it names who
   the run executes as (`c:AshAgent.ExecutionIdentity.run_principal/3`).
 
+  A run that is not live may pin a version other than the latest published one, a draft
+  included, by `agent_version_id`: this is how a prompt is tried on the cases it will
+  be judged by, before it is published. A live run never does.
+
   `needs_step` is a calculation, not a counter: a run is `queued`, or `waiting` on
   `:tools` with none of its invocations still open. Every invocation that finishes can
   wake the run (`AshAgent.Run.Changes.Wake`, which the host attaches to its invocation
@@ -129,7 +133,7 @@ defmodule AshAgent.Run do
   ## What the fragment does not declare
 
   Tenancy, ownership, policies, triggers, relationships to host resources, encryption
-  and the `postgres` block. `input` and `output` are marked `sensitive?`; a host that
+  and the `postgres` block. `input`, `output` and `variables` are marked `sensitive?`; a host that
   encrypts content at rest seals them.
   """
 
@@ -162,12 +166,19 @@ defmodule AshAgent.Run do
 
     create :start do
       description "Start a run of an agent's latest published version."
-      accept [:input, :run_key, :origin, :subject_type, :subject_id, :mode, :fixtures]
+      accept [:input, :run_key, :origin, :subject_type, :subject_id, :mode, :fixtures, :variables]
 
       argument :agent, :string do
         description "The agent's key."
         allow_nil? false
         constraints max_length: 255
+      end
+
+      argument :agent_version_id, :uuid do
+        description """
+        A specific version of the agent to pin instead of its latest published one, which
+        may be a draft. Only a run that is not live may name one.
+        """
       end
 
       change AshAgent.Run.Changes.Start
@@ -372,6 +383,18 @@ defmodule AshAgent.Run do
       description """
       What a run that is not live answers its tool calls with, by target:
       `%{"Resource.Module.action" => result}`.
+      """
+    end
+
+    attribute :variables, :map do
+      allow_nil? false
+      public? true
+      default %{}
+      sensitive? true
+
+      description """
+      The values of the `{{name}}` variables in the pinned version's instructions. A run
+      that leaves one without a value does not start.
       """
     end
 

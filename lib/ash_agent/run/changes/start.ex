@@ -10,6 +10,10 @@ defmodule AshAgent.Run.Changes.Start do
   drifted (`AshAgent.AgentVersion.Definition.check_pinned/1`): a run never starts on a
   version whose tools are not the ones that were approved.
 
+  A run that is not live may name the version to pin (`agent_version_id`), a draft
+  included. Every `{{name}}` in the pinned version's instructions needs a value in the
+  run's `variables`, or the run is refused: nothing starts, so no model is called.
+
   The host then names who the run executes as, from the actor and the version's
   publish-time authority (`c:AshAgent.ExecutionIdentity.run_principal/3`). That is also
   where it decides whether the actor may start this agent at all: a refusal is an
@@ -83,8 +87,9 @@ defmodule AshAgent.Run.Changes.Start do
   defp pin(changeset, context) do
     key = Ash.Changeset.get_argument(changeset, :agent)
 
-    with {:ok, version} <- latest_published(changeset, key),
-         {:ok, version} <- Definition.check_pinned(version),
+    with {:ok, version} <- version(changeset, key),
+         {:ok, version} <- Definition.check_pinned(version, draft?: not live?(changeset)),
+         :ok <- variables(changeset, version),
          {:ok, principal} <- principal(changeset, version, context) do
       limits = stringify(version.limits || %{})
 
@@ -97,6 +102,58 @@ defmodule AshAgent.Run.Changes.Start do
       })
     else
       {:error, error} -> Ash.Changeset.add_error(changeset, error)
+    end
+  end
+
+  defp live?(changeset), do: Ash.Changeset.get_attribute(changeset, :mode) == :live
+
+  defp version(changeset, key) do
+    case Ash.Changeset.get_argument(changeset, :agent_version_id) do
+      nil -> latest_published(changeset, key)
+      id -> named(changeset, key, id)
+    end
+  end
+
+  defp named(changeset, key, id) do
+    if live?(changeset) do
+      {:error,
+       Ash.Error.Changes.InvalidArgument.exception(
+         field: :agent_version_id,
+         message: "only a run that is not live may name its version"
+       )}
+    else
+      case changeset.resource
+           |> Info.agent_version()
+           |> Ash.get(id, tenant: changeset.tenant, authorize?: false, not_found_error?: false) do
+        {:ok, %{key: ^key} = version} ->
+          {:ok, version}
+
+        {:ok, _other} ->
+          {:error,
+           Ash.Error.Changes.InvalidArgument.exception(
+             field: :agent_version_id,
+             message: "is not a version of #{key}"
+           )}
+
+        {:error, error} ->
+          {:error, error}
+      end
+    end
+  end
+
+  defp variables(changeset, version) do
+    values = Ash.Changeset.get_attribute(changeset, :variables) || %{}
+
+    case Definition.missing_variables(version.instructions, values) do
+      [] ->
+        :ok
+
+      missing ->
+        {:error,
+         Ash.Error.Changes.InvalidAttribute.exception(
+           field: :variables,
+           message: "gives no value for #{Enum.join(missing, ", ")}"
+         )}
     end
   end
 
