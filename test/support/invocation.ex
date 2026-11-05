@@ -21,6 +21,7 @@ defmodule AshAgent.Test.Invocation do
   invocation do
     execution_identity(AshAgent.Test.ExecutionIdentity)
     digest_key(AshAgent.Test.DigestKey)
+    release_manifest(AshAgent.Test.ReleaseManifest)
     run(AshAgent.Test.Run)
   end
 end

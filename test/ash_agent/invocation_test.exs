@@ -8,7 +8,7 @@ defmodule AshAgent.InvocationTest do
   import Ecto.Query, only: [from: 2]
 
   alias AshAgent.Invocation.{Approval, Executor, IdempotencyConflict, NoPrincipal}
-  alias AshAgent.Test.{CredentialCheck, Domain, ExecutionIdentity, Invocation}
+  alias AshAgent.Test.{CredentialCheck, Domain, ExecutionIdentity, Invocation, ReleaseManifest}
 
   @record "AshAgent.Test.CredentialCheck.record"
   @reviewed "AshAgent.Test.CredentialCheck.record_reviewed"
@@ -361,6 +361,46 @@ defmodule AshAgent.InvocationTest do
 
       assert {ready.authorization_details, ready.approval_digest, ready.approval_expires_at} ==
                {nil, nil, nil}
+    end
+
+    test "an approval binds the active release, and a different release makes it stale",
+         %{nurse: nurse, lead: lead, check: check} do
+      on_exit(&ReleaseManifest.clear/0)
+      first = ReleaseManifest.activate(AshAgent.Digest.sha256_hex(%{"release" => 1}))
+
+      row = suspend!(nurse, check)
+
+      assert [%{"manifest_digest" => digest}] = row.authorization_details
+      assert {digest, row.release_manifest_id} == {first.digest, first.id}
+
+      # The release moves on while the approval waits.
+      ReleaseManifest.activate(AshAgent.Digest.sha256_hex(%{"release" => 2}))
+
+      stale = approve!(row, lead)
+      assert {stale.status, stale.error_code} == {:stale, "manifest_changed"}
+    end
+
+    test "an approval for one release does not run under another",
+         %{nurse: nurse, lead: lead, check: check} do
+      on_exit(&ReleaseManifest.clear/0)
+      ReleaseManifest.activate(AshAgent.Digest.sha256_hex(%{"release" => 1}))
+
+      ready = approve!(suspend!(nurse, check), lead)
+      assert ready.status == :ready
+
+      ReleaseManifest.clear()
+
+      assert :stale = Domain.execute_invocation!(%{"id" => ready.id}, machinery())
+      assert outcome(ready) == {:stale, nil, "manifest_changed"}
+      assert [%{verified?: false}] = checks(check.licence_number)
+    end
+
+    test "an approval stays good while the same release is active",
+         %{nurse: nurse, lead: lead, check: check} do
+      on_exit(&ReleaseManifest.clear/0)
+      ReleaseManifest.activate(AshAgent.Digest.sha256_hex(%{"release" => 1}))
+
+      assert approve!(suspend!(nurse, check), lead).status == :ready
     end
 
     test "a subject that changed while the approval was pending makes it stale, not ready",
