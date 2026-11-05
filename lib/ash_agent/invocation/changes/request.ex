@@ -66,6 +66,7 @@ defmodule AshAgent.Invocation.Changes.Request do
       )
       |> route(target, mode, args, context)
       |> Ash.Changeset.before_action(&digest_args(&1, args))
+      |> Ash.Changeset.before_action(&bind_manifest/1)
       |> Ash.Changeset.before_action(&bind_approval/1)
       |> Ash.Changeset.after_action(&Enqueue.when_ready/2)
     else
@@ -158,6 +159,33 @@ defmodule AshAgent.Invocation.Changes.Request do
   defp first_state(%Effect{approval: :none}, _mode), do: :ready
   defp first_state(%Effect{}, _mode), do: :awaiting_approval
 
+  # The active release, when the host declares one: kept as the row's lineage, and its
+  # digest is bound by an approval.
+  defp bind_manifest(changeset) do
+    with module when not is_nil(module) <- Info.release_manifest(changeset.resource),
+         {:ok, active} <-
+           module.active(Ash.Changeset.get_attribute(changeset, :target), changeset.tenant) do
+      case active do
+        nil ->
+          changeset
+
+        %{id: id, digest: digest} ->
+          changeset
+          |> Ash.Changeset.force_change_attribute(:release_manifest_id, id)
+          |> Ash.Changeset.set_context(%{ash_agent_manifest_digest: digest})
+      end
+    else
+      nil ->
+        changeset
+
+      {:error, reason} ->
+        Ash.Changeset.add_error(changeset,
+          field: :release_manifest_id,
+          message: "the active release cannot be read: #{inspect(reason)}"
+        )
+    end
+  end
+
   # After `digest_args/2`, so the arguments' digest is part of what is bound.
   defp bind_approval(changeset) do
     if Ash.Changeset.get_attribute(changeset, :status) == :awaiting_approval do
@@ -167,7 +195,8 @@ defmodule AshAgent.Invocation.Changes.Request do
           target_digest: Ash.Changeset.get_attribute(changeset, :target_digest),
           args_digest: Ash.Changeset.get_attribute(changeset, :args_digest),
           preconditions: Ash.Changeset.get_attribute(changeset, :preconditions),
-          identifier: identifier(changeset)
+          identifier: identifier(changeset),
+          manifest_digest: Map.get(changeset.context, :ash_agent_manifest_digest)
         })
 
       Ash.Changeset.force_change_attributes(changeset, %{

@@ -16,6 +16,11 @@ Nothing has been released yet.
 
 ### Features:
 
+- Releases. The `invocation` section takes an optional `release_manifest`, a module implementing the new
+  `AshAgent.ReleaseManifest` (`active/2`: the release live in a tenant that covers a target, with its id and digest). `request` records the
+  active release as `release_manifest_id`, an approval binds its digest as `manifest_digest` in its
+  `authorization_details`, and `apply_decision` and every `claim` find the row `stale` with `error_code`
+  `"manifest_changed"` once a different release is active. A host that declares none binds nothing.
 - Taint. `AshAgent.Run` gains `tainted?` (default `false`): set once a call that reaches outside the application
   (`open_world?`, or an effects snapshot that says nothing) has succeeded and answered the run, and never cleared. It
   is recorded, not enforced, so a host can report or admit on it. `record_step` takes a `tainted` argument for it.

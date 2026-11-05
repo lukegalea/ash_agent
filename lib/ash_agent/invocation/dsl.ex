@@ -25,6 +25,14 @@ defmodule AshAgent.Invocation.Dsl do
         type: {:behaviour, AshAgent.DigestKey},
         doc: "The module implementing `AshAgent.DigestKey` for this resource."
       ],
+      release_manifest: [
+        type: {:behaviour, AshAgent.ReleaseManifest},
+        doc: """
+        The module implementing `AshAgent.ReleaseManifest` for this resource. With it, a
+        request records the active release and an approval binds that release's digest, so
+        an approval does not survive a change of release. Without it, nothing is bound.
+        """
+      ],
       run: [
         type: :atom,
         doc: """

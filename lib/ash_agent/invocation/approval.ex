@@ -32,7 +32,7 @@ defmodule AshAgent.Invocation.Approval do
   """
 
   alias AshAgent.Digest
-  alias AshAgent.Invocation.Target
+  alias AshAgent.Invocation.{Info, Target}
 
   @type_prefix "urn:ash-agent:action:"
 
@@ -87,6 +87,8 @@ defmodule AshAgent.Invocation.Approval do
     * `"target_changed"`: the target is declared differently now, or no longer resolves;
     * `"subject_changed"`: a precondition's record has a different `version_number` now,
       or is gone;
+    * `"manifest_changed"`: the release active now is not the one the approval was bound to
+      (`AshAgent.ReleaseManifest`; only for a resource that declares one);
     * `"approval_changed"`: anything else the digest covers differs from what was
       approved, such as an `authorization_details` that is not the one digested.
 
@@ -106,6 +108,7 @@ defmodule AshAgent.Invocation.Approval do
     else
       target_digest = current_target_digest(invocation)
       preconditions = Target.current_preconditions(invocation.preconditions, opts)
+      manifest_digest = current_manifest_digest(invocation, opts)
 
       cond do
         target_digest != invocation.target_digest ->
@@ -114,7 +117,11 @@ defmodule AshAgent.Invocation.Approval do
         preconditions != invocation.preconditions ->
           "subject_changed"
 
-        bound(invocation, target_digest, preconditions) != invocation.approval_digest ->
+        manifest_digest != bound_manifest_digest(invocation) ->
+          "manifest_changed"
+
+        bound(invocation, target_digest, preconditions, manifest_digest) !=
+            invocation.approval_digest ->
           "approval_changed"
 
         true ->
@@ -137,18 +144,44 @@ defmodule AshAgent.Invocation.Approval do
 
   # The digest of what the row says was approved, with what can change since put back as
   # it is now.
-  defp bound(%{authorization_details: details} = invocation, target_digest, preconditions)
+  # The digest of the release active now, or, for a resource that declares none, the one
+  # the row recorded (which is nil), so nothing is compared.
+  defp current_manifest_digest(invocation, opts) do
+    case Info.release_manifest(invocation.__struct__) do
+      nil ->
+        bound_manifest_digest(invocation)
+
+      module ->
+        case module.active(invocation.target, opts[:tenant]) do
+          {:ok, %{digest: digest}} -> digest
+          _none_or_unreadable -> nil
+        end
+    end
+  end
+
+  defp bound_manifest_digest(%{authorization_details: [%{"manifest_digest" => digest} | _]}),
+    do: digest
+
+  defp bound_manifest_digest(_invocation), do: nil
+
+  defp bound(
+         %{authorization_details: details} = invocation,
+         target_digest,
+         preconditions,
+         manifest_digest
+       )
        when is_list(details) do
     details
     |> Enum.map(fn entry ->
       Map.merge(entry, %{
         "target_digest" => target_digest,
         "args_digest" => invocation.args_digest,
-        "preconditions" => preconditions
+        "preconditions" => preconditions,
+        "manifest_digest" => manifest_digest
       })
     end)
     |> digest()
   end
 
-  defp bound(_invocation, _target_digest, _preconditions), do: nil
+  defp bound(_invocation, _target_digest, _preconditions, _manifest_digest), do: nil
 end
