@@ -12,18 +12,23 @@ defmodule AshAgent.Test.ReleaseManifest do
   @key {__MODULE__, :active}
 
   @impl true
-  def active(_tenant) do
-    case :persistent_term.get(@key, nil) do
-      nil -> {:ok, nil}
-      active -> {:ok, active}
+  def active(target, _tenant) do
+    with %{covers: covers} = active <- :persistent_term.get(@key, nil),
+         true <- covers == :all or target in covers do
+      {:ok, Map.take(active, [:id, :digest])}
+    else
+      _none_or_not_covering -> {:ok, nil}
     end
   end
 
-  @doc "Makes `digest` the digest of the active release, with a fresh id."
-  @spec activate(String.t()) :: %{id: Ash.UUID.t(), digest: String.t()}
-  def activate(digest) do
+  @doc """
+  Makes `digest` the digest of the active release, with a fresh id. It covers every
+  target, or only those named by `covers`.
+  """
+  @spec activate(String.t(), :all | [String.t()]) :: %{id: Ash.UUID.t(), digest: String.t()}
+  def activate(digest, covers \\ :all) do
     active = %{id: Ash.UUID.generate(), digest: digest}
-    :persistent_term.put(@key, active)
+    :persistent_term.put(@key, Map.put(active, :covers, covers))
     active
   end
 

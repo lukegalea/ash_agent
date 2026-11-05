@@ -152,7 +152,7 @@ defmodule AshAgent.Invocation.Approval do
         bound_manifest_digest(invocation)
 
       module ->
-        case module.active(opts[:tenant]) do
+        case module.active(invocation.target, opts[:tenant]) do
           {:ok, %{digest: digest}} -> digest
           _none_or_unreadable -> nil
         end

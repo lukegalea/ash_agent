@@ -395,6 +395,19 @@ defmodule AshAgent.InvocationTest do
       assert [%{verified?: false}] = checks(check.licence_number)
     end
 
+    test "a release that does not cover the target binds nothing, and its change is no matter",
+         %{nurse: nurse, lead: lead, check: check} do
+      on_exit(&ReleaseManifest.clear/0)
+      ReleaseManifest.activate(AshAgent.Digest.sha256_hex(%{"release" => 1}), [@record])
+
+      row = suspend!(nurse, check)
+      assert [%{"manifest_digest" => nil}] = row.authorization_details
+      assert row.release_manifest_id == nil
+
+      ReleaseManifest.activate(AshAgent.Digest.sha256_hex(%{"release" => 2}), [@record])
+      assert approve!(row, lead).status == :ready
+    end
+
     test "an approval stays good while the same release is active",
          %{nurse: nurse, lead: lead, check: check} do
       on_exit(&ReleaseManifest.clear/0)

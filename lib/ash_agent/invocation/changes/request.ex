@@ -163,7 +163,8 @@ defmodule AshAgent.Invocation.Changes.Request do
   # digest is bound by an approval.
   defp bind_manifest(changeset) do
     with module when not is_nil(module) <- Info.release_manifest(changeset.resource),
-         {:ok, active} <- module.active(changeset.tenant) do
+         {:ok, active} <-
+           module.active(Ash.Changeset.get_attribute(changeset, :target), changeset.tenant) do
       case active do
         nil ->
           changeset
