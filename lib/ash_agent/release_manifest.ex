@@ -19,7 +19,8 @@ defmodule AshAgent.ReleaseManifest do
       release's digest is no longer the one that was approved.
 
   A resource that declares no `release_manifest` in its `invocation` section binds nothing,
-  and `manifest_digest` stays nil.
+  and `manifest_digest` stays nil. The same module says which version of an agent live runs
+  start on (`c:agent_version/2`).
   """
 
   @typedoc "The active release: its id, and the digest an approval binds."
@@ -33,4 +34,20 @@ defmodule AshAgent.ReleaseManifest do
   """
   @callback active(target :: String.t(), tenant :: term()) ::
               {:ok, active() | nil} | {:error, term()}
+
+  @doc """
+  The id of the version of the agent `key` that the release active in `tenant` pins, or
+  `{:ok, nil}` when no active release pins one.
+
+  A live run (`AshAgent.Run`'s `start`) starts on that version instead of the agent's latest
+  published one, so publishing a candidate does not make it live: a release does, by being
+  promoted, and rolling back returns to the version the earlier release pinned. With no
+  active release pinning the agent, the latest published version runs, as it does for a
+  host that has no releases. Optional: a host that does not implement it starts every live
+  run on the latest published version.
+  """
+  @callback agent_version(key :: String.t(), tenant :: term()) ::
+              {:ok, Ash.UUID.t() | nil} | {:error, term()}
+
+  @optional_callbacks agent_version: 2
 end

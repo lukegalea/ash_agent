@@ -5,8 +5,10 @@ defmodule AshAgent.Run.Changes.Start do
   @moduledoc """
   The `start` action's work.
 
-  A run pins the agent's latest published version in the run's tenant (`latest_published`
-  on the host's agent version resource), and refuses when there is none or when it has
+  A live run pins the version the active release pins for the agent, when the host keeps
+  releases and one does (`c:AshAgent.ReleaseManifest.agent_version/2`), and otherwise the
+  agent's latest published version in the run's tenant (`latest_published` on the host's
+  agent version resource). It refuses when there is none or when it has
   drifted (`AshAgent.AgentVersion.Definition.check_pinned/1`): a run never starts on a
   version whose tools are not the ones that were approved.
 
@@ -109,8 +111,46 @@ defmodule AshAgent.Run.Changes.Start do
 
   defp version(changeset, key) do
     case Ash.Changeset.get_argument(changeset, :agent_version_id) do
-      nil -> latest_published(changeset, key)
+      nil -> released_or_latest(changeset, key)
       id -> named(changeset, key, id)
+    end
+  end
+
+  # A live run starts on what the active release pins, so a version published after it is
+  # not live until a release promotes it. A run that is not live measures the latest
+  # published one (or names its own), as it always did.
+  defp released_or_latest(changeset, key) do
+    case released(changeset, key) do
+      {:ok, nil} -> latest_published(changeset, key)
+      {:ok, id} -> pinned(changeset, key, id)
+      {:error, error} -> {:error, error}
+    end
+  end
+
+  defp released(changeset, key) do
+    with true <- live?(changeset),
+         invocation when not is_nil(invocation) <- Info.invocation(changeset.resource),
+         module when not is_nil(module) <- AshAgent.Invocation.Info.release_manifest(invocation),
+         true <- Code.ensure_loaded?(module) and function_exported?(module, :agent_version, 2) do
+      module.agent_version(key, changeset.tenant)
+    else
+      _no_release -> {:ok, nil}
+    end
+  end
+
+  defp pinned(changeset, key, id) do
+    case changeset.resource
+         |> Info.agent_version()
+         |> Ash.get(id, tenant: changeset.tenant, authorize?: false, not_found_error?: false) do
+      {:ok, %{key: ^key} = version} ->
+        {:ok, version}
+
+      _gone ->
+        {:error,
+         Ash.Error.Changes.InvalidArgument.exception(
+           field: :agent,
+           message: "the active release pins a version of #{key} that does not exist"
+         )}
     end
   end
 

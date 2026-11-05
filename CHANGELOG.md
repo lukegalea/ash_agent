@@ -16,6 +16,11 @@ Nothing has been released yet.
 
 ### Features:
 
+- The release decides which version of an agent runs live. `AshAgent.ReleaseManifest` takes an optional `agent_version/2`
+  (the id of the version the active release pins for an agent key, or nil). A live run's `start` pins it instead of the
+  latest published version, so publishing a candidate does not make it live; with no release pinning the agent, or a
+  host that does not implement the callback, the latest published version runs as before. Runs that are not live are
+  unchanged.
 - Releases. The `invocation` section takes an optional `release_manifest`, a module implementing the new
   `AshAgent.ReleaseManifest` (`active/2`: the release live in a tenant that covers a target, with its id and digest). `request` records the
   active release as `release_manifest_id`, an approval binds its digest as `manifest_digest` in its

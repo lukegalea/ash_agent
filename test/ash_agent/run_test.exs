@@ -101,6 +101,36 @@ defmodule AshAgent.RunTest do
       assert needs_step?(run)
     end
 
+    test "an active release that pins the agent's version decides which version a live run starts on",
+         %{nurse: nurse} do
+      on_exit(&AshAgent.Test.ReleaseManifest.clear/0)
+      released = published!()
+
+      # A candidate is published after the release: it is not what live runs start on.
+      candidate =
+        AshAgent.Test.Agents.CheckReaderCandidate
+        |> Domain.register_agent!()
+        |> Domain.publish_agent_version!()
+
+      assert candidate.id != released.id and candidate.version > released.version
+
+      assert Domain.start_run!(@agent, "SYNTHETIC: check RN-1", actor: nurse).agent_version_id ==
+               candidate.id
+
+      AshAgent.Test.ReleaseManifest.pin_agent(@agent, released.id)
+
+      assert Domain.start_run!(@agent, "SYNTHETIC: check RN-1", actor: nurse).agent_version_id ==
+               released.id
+
+      # A run that is not live names its own version, as before.
+      assert Domain.start_run!(
+               @agent,
+               "SYNTHETIC: check RN-1",
+               %{mode: :eval, agent_version_id: candidate.id},
+               actor: nurse
+             ).agent_version_id == candidate.id
+    end
+
     test "a requester without the agent's start grant is refused, and no run is written" do
       published!()
       stranger = %{id: "stranger-#{System.unique_integer([:positive])}"}
