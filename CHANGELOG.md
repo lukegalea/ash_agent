@@ -16,6 +16,13 @@ Nothing has been released yet.
 
 ### Features:
 
+- Spans. A claimed step emits `[:ash_agent, :run, :step]` and a claimed invocation's execution
+  `[:ash_agent, :invocation, :execute]`, as `:telemetry.span/3` events whose metadata is the row (and the step's agent
+  version), with the result on `:stop`. `AshAgent.OpenTelemetry` names the span each is reported as under the
+  OpenTelemetry GenAI semantic conventions, pinned at v1.41.0: `invoke_agent {agent key}` with the version's
+  `content_hash` as `gen_ai.agent.version`, and `execute_tool {target}`. It builds no content attribute, and its
+  `status/2` reads only the outcomes that finished the work as ok. The package still depends on no OpenTelemetry
+  library; the host's handler starts the spans.
 - Execution history. `AshAgent.Execution.Source` is a behaviour a host implements once for each kind of record a
   reader follows an execution through: `read/2` reads the rows of a trace (its correlation id and the references
   already in it) as the viewer, at most a limit at a time with a cursor, and `to_entries/1` maps them to entries of
