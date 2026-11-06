@@ -14,6 +14,8 @@ See [Conventional Commits](https://conventionalcommits.org) for commit guideline
 
 Nothing has been released yet.
 
+Requires Elixir 1.20 or later.
+
 ### Features:
 
 - Execution history. `AshAgent.Execution.Source` is a behaviour a host implements once for each kind of record a
