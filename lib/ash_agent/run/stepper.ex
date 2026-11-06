@@ -103,7 +103,7 @@ defmodule AshAgent.Run.Stepper do
       {:ok, run} ->
         case claim(run, opts) do
           {:ok, %{status: :running} = claimed} ->
-            around(claimed, fn -> run_claimed(claimed, opts) end)
+            around(claimed, fn -> traced(claimed, opts) end)
 
           {:ok, %{status: status}} ->
             {:ok, status}
@@ -513,6 +513,17 @@ defmodule AshAgent.Run.Stepper do
   # executing actor, the run's tenant, and the run in the action context.
   defp tool_context(run, actor, opts),
     do: %{actor: actor, tenant: opts[:tenant], context: %{ash_agent: %{run_id: run.id}}}
+
+  # The step as a `[:ash_agent, :run, :step]` span (`AshAgent.OpenTelemetry`), inside
+  # the host's `around_step` so it runs under the trace context restored there.
+  defp traced(run, opts) do
+    metadata = %{run: run, agent_version: run.__metadata__[:agent_version]}
+
+    :telemetry.span([:ash_agent, :run, :step], metadata, fn ->
+      result = run_claimed(run, opts)
+      {result, Map.put(metadata, :result, result)}
+    end)
+  end
 
   defp around(run, fun) do
     runtime = Info.runtime(run.__struct__)

@@ -111,12 +111,23 @@ defmodule AshAgent.Invocation.Executor do
 
   defp claim_and_run(row, opts) do
     case claim(row, opts) do
-      {:ok, claimed} -> run_claimed(claimed, opts)
+      {:ok, claimed} -> traced(claimed, opts)
       {:error, :not_claimable} -> {:ok, :skipped}
       {:error, :stale} -> {:ok, :stale}
       {:error, :outcome_unknown} -> {:ok, :outcome_unknown}
       {:error, error} -> {:error, error}
     end
+  end
+
+  # Running the claimed row as an `[:ash_agent, :invocation, :execute]` span
+  # (`AshAgent.OpenTelemetry`).
+  defp traced(claimed, opts) do
+    metadata = %{invocation: claimed}
+
+    :telemetry.span([:ash_agent, :invocation, :execute], metadata, fn ->
+      result = run_claimed(claimed, opts)
+      {result, Map.put(metadata, :result, result)}
+    end)
   end
 
   # A row of a run that is not live, whose target is not a read: answered from the run's

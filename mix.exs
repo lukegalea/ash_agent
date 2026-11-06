@@ -70,6 +70,8 @@ defmodule AshAgent.MixProject do
       # The model client ash_ai's tool loop drives. ash_ai declares it optional; an
       # agent run's step calls the loop, so this package needs it.
       {:req_llm, "~> 1.28"},
+      # The spans a step and an invocation are reported as (`AshAgent.OpenTelemetry`).
+      {:telemetry, "~> 1.1"},
       # RFC 8785 canonical JSON, for digests of arguments and of a target's
       # declaration that must not depend on key order.
       {:jcs, "~> 0.2"},
