@@ -4,8 +4,7 @@
 defmodule AshAgent.Run.Calculations.NeedsStep do
   @moduledoc """
   Whether a run has a step to take now: it is `queued`, or it is `waiting` on its tool
-  calls and none of its invocations is still open (`requested`, `awaiting_approval`,
-  `ready`, `executing`, `dispatched` or `outcome_unknown`).
+  calls and none of its invocations is still open (`AshAgent.Invocation.open_statuses/0`).
 
   Derived, never counted: nothing has to remember to decrement it on every way an
   invocation can end, so a missed wake-up costs a sweep's delay and never parks a run
@@ -19,7 +18,7 @@ defmodule AshAgent.Run.Calculations.NeedsStep do
 
   require Ash.Expr
 
-  @open [:requested, :awaiting_approval, :ready, :executing, :dispatched, :outcome_unknown]
+  @open AshAgent.Invocation.open_statuses()
 
   @impl true
   def expression(opts, _context) do

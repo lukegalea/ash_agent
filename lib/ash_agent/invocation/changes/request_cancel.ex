@@ -5,7 +5,8 @@ defmodule AshAgent.Invocation.Changes.RequestCancel do
   @moduledoc """
   Cancellation is cooperative.
 
-    * A row that has not started (`requested`, `awaiting_approval`, `ready`) becomes
+    * A row that has not started (`requested`, `awaiting_approval`, `request_info`,
+      `ready`) becomes
       `cancelled`. A `ready` row's job still runs, finds the row not claimable and ends.
     * A `ready` row an earlier attempt of which may have reached outside
       (`AshAgent.Invocation.Failure.attempted_outside?/2`) has perhaps started: it
@@ -27,7 +28,7 @@ defmodule AshAgent.Invocation.Changes.RequestCancel do
 
   alias AshAgent.Invocation.{Enqueue, Failure}
 
-  @not_started [:requested, :awaiting_approval, :ready]
+  @not_started [:requested, :awaiting_approval, :request_info, :ready]
   @in_flight [:executing, :dispatched, :outcome_unknown]
 
   @impl true

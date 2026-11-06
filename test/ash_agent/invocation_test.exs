@@ -285,6 +285,77 @@ defmodule AshAgent.InvocationTest do
       assert {:error, %Ash.Error.Invalid{}} = Domain.apply_decision(row, %{})
       assert Domain.get_invocation!(row.id).status == :awaiting_approval
     end
+
+    test "an outcome the fragment does not know is refused, and nothing is applied",
+         %{nurse: nurse} do
+      row = invoke!(nurse, @reviewed, args())
+
+      for outcome <- [:maybe, :ready, "unknown"] do
+        assert {:error, %Ash.Error.Invalid{}} = Domain.apply_decision(row, %{outcome: outcome})
+      end
+
+      assert Domain.get_invocation!(row.id).status == :awaiting_approval
+    end
+  end
+
+  describe "a request for more information" do
+    test "parks the row: it is never claimed, and no decision applies to it",
+         %{nurse: nurse, lead: lead} do
+      parked =
+        Domain.apply_decision!(invoke!(nurse, @reviewed, args()), %{outcome: :request_info})
+
+      assert parked.status == :request_info
+      assert AshAgent.Execution.Status.invocation(parked) == {:waiting, :requester}
+
+      assert {:error, :not_claimable} = Executor.claim(parked, machinery())
+
+      for outcome <- [:approved, :rejected, :stale, :request_info, nil] do
+        assert {:error, _} =
+                 Domain.apply_decision(parked, %{outcome: outcome, decided_by_id: lead.id})
+      end
+
+      assert :skipped = Domain.execute_invocation!(%{"id" => parked.id}, machinery())
+      assert stored(Domain.get_invocation!(parked.id)) == stored(parked)
+      assert checks("RN-1") == []
+    end
+
+    test "reaches ready only through a later approval, once the requester has answered",
+         %{nurse: nurse, lead: lead} do
+      parked =
+        Domain.apply_decision!(invoke!(nurse, @reviewed, args()), %{outcome: :request_info})
+
+      back = Domain.provide_info!(parked)
+      assert back.status == :awaiting_approval
+      assert back.approval_digest == parked.approval_digest
+      assert back.authorization_details == parked.authorization_details
+
+      ready = Domain.apply_decision!(back, %{outcome: :approved, decided_by_id: lead.id})
+      assert {ready.status, ready.approved_by_id} == {:ready, lead.id}
+    end
+
+    test "is answered only from request_info", %{nurse: nurse} do
+      awaiting = invoke!(nurse, @reviewed, args(1))
+      ready = invoke!(nurse, @record, args(2))
+      rejected = Domain.apply_decision!(invoke!(nurse, @reviewed, args(3)), %{outcome: :rejected})
+
+      for row <- [awaiting, ready, rejected] do
+        assert {:error, _} = Domain.provide_info(row)
+        assert stored(Domain.get_invocation!(row.id)) == stored(row)
+      end
+    end
+
+    test "a parked row can be cancelled, and is then final", %{nurse: nurse} do
+      parked =
+        Domain.apply_decision!(invoke!(nurse, @reviewed, args()), %{outcome: :request_info})
+
+      cancelled = Domain.request_cancel!(parked)
+      assert cancelled.status == :cancelled
+      assert {:error, _} = Domain.provide_info(cancelled)
+    end
+
+    test "is an open status: a run with a parked tool call is not finished" do
+      assert :request_info in AshAgent.Invocation.open_statuses()
+    end
   end
 
   describe "approval binding" do
@@ -465,6 +536,30 @@ defmodule AshAgent.InvocationTest do
 
       assert {:stale, "target_changed"} =
                then(approve!(row, lead), &{&1.status, &1.error_code})
+    end
+
+    test "a row returned to its approver gets a new approval window; what it binds is the same",
+         %{nurse: nurse, lead: lead, check: check} do
+      parked = Domain.apply_decision!(suspend!(nurse, check), %{outcome: :request_info})
+      # The requester took longer than the first window to answer.
+      parked = past!(parked, approval_expires_at: DateTime.add(DateTime.utc_now(), -60))
+
+      before = DateTime.utc_now()
+      back = Domain.provide_info!(parked)
+      assert DateTime.diff(back.approval_expires_at, before, :hour) in 23..24
+      assert back.approval_digest == parked.approval_digest
+
+      assert approve!(back, lead).status == :ready
+    end
+
+    test "a subject that changed while the requester was asked makes the approval stale",
+         %{nurse: nurse, lead: lead, check: check} do
+      parked = Domain.apply_decision!(suspend!(nurse, check), %{outcome: :request_info})
+      changed!(check)
+      back = Domain.provide_info!(parked)
+
+      stale = approve!(back, lead)
+      assert {stale.status, stale.error_code} == {:stale, "subject_changed"}
     end
 
     test "an expired approval is neither applied nor run", %{

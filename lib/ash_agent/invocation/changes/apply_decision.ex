@@ -17,7 +17,11 @@ defmodule AshAgent.Invocation.Changes.ApplyDecision do
       becomes `ready`, records who approved it, and its `:execute` job is enqueued in the
       same transaction. Otherwise it becomes `stale`, with the reason as `error_code`;
     * `:rejected`: the row becomes `rejected`, with `failure_class: :rejected`;
-    * `:stale`: the row becomes `stale`: what was approved is no longer what would run.
+    * `:stale`: the row becomes `stale`: what was approved is no longer what would run;
+    * `:request_info`: the approver asked the requester for more information before
+      deciding. The row waits in `request_info`, is never claimed there, and only
+      `provide_info` moves it on, back to `awaiting_approval`, so it reaches `ready`
+      only through a later approval.
 
   With no outcome the update is refused, so it writes nothing.
   """
@@ -61,6 +65,9 @@ defmodule AshAgent.Invocation.Changes.ApplyDecision do
 
       :stale ->
         AshStateMachine.transition_state(changeset, :stale)
+
+      :request_info ->
+        AshStateMachine.transition_state(changeset, :request_info)
 
       nil ->
         Ash.Changeset.add_error(changeset, field: :outcome, message: "no decision to apply")

@@ -41,7 +41,9 @@ defmodule AshAgent.Invocation do
 
   `requested → awaiting_approval → ready → executing → (dispatched) → succeeded | failed |
   outcome_unknown`, plus `rejected`, `stale` and `cancelled`. `request` creates a row
-  directly in `awaiting_approval`, `ready` or `rejected`. `succeeded`, `failed`,
+  directly in `awaiting_approval`, `ready` or `rejected`. An approver may ask for more
+  information instead of deciding: the row waits in `request_info` until `provide_info`
+  returns it to `awaiting_approval`, and nothing but a later approval makes it ready. `succeeded`, `failed`,
   `rejected`, `stale` and `cancelled` are final: no action changes their outcome. Two
   exceptions, both named: `retry` makes a row that `failed` with `:transient` ready
   again, and `complete_external` adds what a late callback said to a final row's
@@ -80,12 +82,17 @@ defmodule AshAgent.Invocation do
       worker claimed with. A worker whose lease was taken over matches no row, gets
       `Ash.Error.Changes.StaleRecord`, and its transaction rolls back.
     * `apply_decision` (update): applies an approval's outcome to an `awaiting_approval`
-      row: `ready`, `rejected` or `stale`. The outcome arrives as an argument, set by the
+      row: `ready`, `rejected`, `stale`, or `request_info` when the approver asked the
+      requester for more information. The outcome arrives as an argument, set by the
       caller or by a change the host attaches to the action. An approval makes the row
       ready only while it still binds the request: `request` records what it binds
       (`authorization_details` and their `approval_digest`, RFC 9396 and RFC 8785) and
       when it expires, and a changed subject, a changed target or an expired approval
       makes the row `stale` instead.
+    * `provide_info` (update): returns a `request_info` row to `awaiting_approval` once
+      the requester has answered, with a new approval window from the declaration's
+      `approval_expires_in`. What is approved does not change: an amendment is a new
+      request.
     * `request_cancel` (update): cancels a row that has not started; on a row that is
       executing it only records the request. A `ready` row an earlier attempt of which
       may have reached outside is not cancelled as though nothing ran: its outcome
@@ -147,8 +154,25 @@ defmodule AshAgent.Invocation do
 
   @failure_classes [:rejected, :denied, :business, :transient, :permanent, :timeout, :budget]
 
+  @open [
+    :requested,
+    :awaiting_approval,
+    :request_info,
+    :ready,
+    :executing,
+    :dispatched,
+    :outcome_unknown
+  ]
+
   @doc false
   def failure_classes, do: @failure_classes
+
+  @doc """
+  The statuses of a row that has not ended: one that may still run, or whose outcome is
+  not yet known.
+  """
+  @spec open_statuses() :: [atom()]
+  def open_statuses, do: @open
 
   state_machine do
     state_attribute :status
@@ -157,7 +181,11 @@ defmodule AshAgent.Invocation do
     extra_states [:dispatched, :outcome_unknown]
 
     transitions do
-      transition :apply_decision, from: :awaiting_approval, to: [:ready, :rejected, :stale]
+      transition :apply_decision,
+        from: :awaiting_approval,
+        to: [:ready, :rejected, :stale, :request_info]
+
+      transition :provide_info, from: :request_info, to: :awaiting_approval
       transition :claim, from: [:ready, :executing], to: [:executing, :stale, :outcome_unknown]
       transition :succeed, from: :executing, to: :succeeded
       transition :fail, from: :executing, to: :failed
@@ -176,7 +204,7 @@ defmodule AshAgent.Invocation do
       transition :simulate, from: :ready, to: [:succeeded, :failed]
 
       transition :request_cancel,
-        from: [:requested, :awaiting_approval, :ready],
+        from: [:requested, :awaiting_approval, :request_info, :ready],
         to: [:cancelled, :outcome_unknown]
     end
   end
@@ -443,17 +471,31 @@ defmodule AshAgent.Invocation do
 
       argument :outcome, :atom do
         description """
-        `:approved`, `:rejected` or `:stale`. Supplied by the caller, or set by a change
-        the host attaches to this action. With no outcome the update is refused.
+        `:approved`, `:rejected`, `:stale` or `:request_info` (the approver asked the
+        requester for more information). Supplied by the caller, or set by a change the
+        host attaches to this action. With no outcome the update is refused.
         """
 
-        constraints one_of: [:approved, :rejected, :stale]
+        constraints one_of: [:approved, :rejected, :stale, :request_info]
       end
 
       argument :decided_by_id, :uuid
 
       change filter(expr(status == :awaiting_approval))
       change AshAgent.Invocation.Changes.ApplyDecision
+    end
+
+    update :provide_info do
+      description """
+      Return a row whose approver asked for more information to its approver, once the
+      requester has answered.
+      """
+
+      accept []
+      require_atomic? false
+
+      change filter(expr(status == :request_info))
+      change AshAgent.Invocation.Changes.ProvideInfo
     end
 
     update :simulate do

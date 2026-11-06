@@ -22,7 +22,9 @@ defmodule AshAgent.Invocation.Approval do
 
   `approval_digest` is the SHA-256 of its RFC 8785 canonical JSON (`AshAgent.Digest`).
   Both are written by `request`, with `approval_expires_at` from the declaration's
-  `approval_expires_in`, and no action changes them.
+  `approval_expires_in`, and no action changes them. `provide_info` starts a new
+  approval window when a row returns to its approver, from the same declaration as it
+  was snapshotted.
 
   An approval holds while the same digest is computed again from the row with the target
   as it is declared now and each precondition's record as it stands now, and until
@@ -64,20 +66,30 @@ defmodule AshAgent.Invocation.Approval do
   @spec digest([map()]) :: String.t()
   def digest(details), do: Digest.sha256_hex(details)
 
-  @doc "When an approval requested at `now` for `effect` expires, or nil when it does not."
-  @spec expires_at(AshAgent.Effects.Effect.t(), DateTime.t()) :: DateTime.t() | nil
-  def expires_at(%{approval_expires_in: nil}, _now), do: nil
+  @doc """
+  When an approval requested at `now` for `effect` expires, or nil when it does not.
+  `effect` is the declaration, or its snapshot on a row (`AshAgent.Effects.Effect.to_map/1`).
+  """
+  @spec expires_at(AshAgent.Effects.Effect.t() | map(), DateTime.t()) :: DateTime.t() | nil
+  def expires_at(%{approval_expires_in: duration}, now), do: expires_in(duration, now)
+  def expires_at(%{"approval_expires_in" => duration}, now), do: expires_in(duration, now)
+  def expires_at(_effect, _now), do: nil
 
-  def expires_at(%{approval_expires_in: duration}, now) do
+  @seconds %{days: 86_400, hours: 3_600, minutes: 60}
+
+  defp expires_in(duration, now) when is_list(duration) or is_map(duration) do
     seconds =
-      Enum.reduce(duration, 0, fn
-        {:days, n}, acc -> acc + n * 86_400
-        {:hours, n}, acc -> acc + n * 3_600
-        {:minutes, n}, acc -> acc + n * 60
-      end)
+      Enum.reduce(duration, 0, fn {unit, n}, acc -> acc + n * Map.fetch!(@seconds, unit(unit)) end)
 
     DateTime.add(now, seconds, :second)
   end
+
+  defp expires_in(nil, _now), do: nil
+
+  defp unit(unit) when is_atom(unit), do: unit
+  defp unit("days"), do: :days
+  defp unit("hours"), do: :hours
+  defp unit("minutes"), do: :minutes
 
   @doc """
   Why the approval `invocation` carries no longer holds, or nil while it does (and for a

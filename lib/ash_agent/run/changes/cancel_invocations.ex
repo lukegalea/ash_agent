@@ -4,8 +4,8 @@
 defmodule AshAgent.Run.Changes.CancelInvocations do
   @moduledoc """
   A run that ends without finishing (cancelled, or failed) cancels its tool calls that
-  have not started: each of its invocations that is `requested`, `awaiting_approval` or
-  `ready` gets `request_cancel`, in the same transaction. One that is executing,
+  have not started: each of its invocations that is `requested`, `awaiting_approval`,
+  `request_info` or `ready` gets `request_cancel`, in the same transaction. One that is executing,
   dispatched or of unknown outcome records the request and ends as its own rules say;
   one that finished is left as it is. Nothing done is undone: reversing an effect is a
   separate request, never a side effect of cancelling.
@@ -20,7 +20,7 @@ defmodule AshAgent.Run.Changes.CancelInvocations do
 
   alias AshAgent.Run.Info
 
-  @open [:requested, :awaiting_approval, :ready, :executing, :dispatched, :outcome_unknown]
+  @open AshAgent.Invocation.open_statuses()
 
   @impl true
   def change(changeset, _opts, _context) do
