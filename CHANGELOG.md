@@ -18,6 +18,12 @@ Requires Elixir 1.20 or later.
 
 ### Features:
 
+- A request for more information. An approver may answer an invocation awaiting approval with `request_info` instead
+  of a decision: `apply_decision` with `outcome: :request_info` parks the row in the new `request_info` status, which is
+  never claimed and to which no decision applies, and `provide_info` returns it to `awaiting_approval` once the
+  requester has answered, with a new approval window and the same binding. `AshAgent.Execution.Status` reads it as
+  `:waiting` on `:requester`, a run waiting on such a tool call keeps waiting, and cancelling the run cancels it.
+  `AshAgent.Invocation.open_statuses/0` is the one list of statuses that have not ended.
 - Spans. A claimed step emits `[:ash_agent, :run, :step]` and a claimed invocation's execution
   `[:ash_agent, :invocation, :execute]`, as `:telemetry.span/3` events whose metadata is the row (and the step's agent
   version), with the result on `:stop`. `AshAgent.OpenTelemetry` names the span each is reported as under the

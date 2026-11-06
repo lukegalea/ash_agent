@@ -35,6 +35,7 @@ defmodule AshAgent.Test.Domain do
       define :get_invocation, action: :read, get_by: [:id]
       define :claim_invocation, action: :claim
       define :apply_decision, action: :apply_decision
+      define :provide_info, action: :provide_info
       define :request_cancel, action: :request_cancel
       define :execute_invocation, action: :execute, args: [:primary_key]
       define :reconcile_invocation, action: :reconcile, args: [:primary_key]
