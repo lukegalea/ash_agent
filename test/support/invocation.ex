@@ -18,6 +18,12 @@ defmodule AshAgent.Test.Invocation do
     repo AshAgent.Test.Repo
   end
 
+  # A host supplies its own timestamps; an execution source orders entries by this one
+  # (`AshAgent.Test.InvocationSource`).
+  attributes do
+    create_timestamp :inserted_at, public?: true
+  end
+
   invocation do
     execution_identity(AshAgent.Test.ExecutionIdentity)
     digest_key(AshAgent.Test.DigestKey)

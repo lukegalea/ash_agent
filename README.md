@@ -39,8 +39,8 @@ its own resources and supplies everything that depends on the application:
 - ash_oban triggers, and therefore the workers, queues and schedules;
 - audit and encryption at rest;
 - implementations of the package's behaviours: who an invocation or a run executes as, the key an argument digest is
-  taken under, and how a run's step reaches a model; later, how an approval is opened and read, and where execution
-  history comes from.
+  taken under, how a run's step reaches a model, and where an execution's history is read from
+  (`AshAgent.Execution.Source`); later, how an approval is opened and read.
 
 See [What the host supplies](documentation/topics/what-the-host-supplies.md).
 
