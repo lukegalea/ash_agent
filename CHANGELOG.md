@@ -14,6 +14,8 @@ See [Conventional Commits](https://conventionalcommits.org) for commit guideline
 
 Nothing has been released yet.
 
+Requires Elixir 1.20 or later.
+
 ### Features:
 
 - Spans. A claimed step emits `[:ash_agent, :run, :step]` and a claimed invocation's execution
