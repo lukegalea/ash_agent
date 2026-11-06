@@ -16,6 +16,13 @@ Nothing has been released yet.
 
 ### Features:
 
+- Execution history. `AshAgent.Execution.Source` is a behaviour a host implements once for each kind of record a
+  reader follows an execution through: `read/2` reads the rows of a trace (its correlation id and the references
+  already in it) as the viewer, at most a limit at a time with a cursor, and `to_entries/1` maps them to entries of
+  one shape (`at`, `kind`, `status`, `blocked_on`, `source_ref`, `parent_ref`, `definition_ref`, `actor_label`,
+  `cost`, `recorded?`, `summary`), built with `Source.entry/1`. `AshAgent.Execution.Status` holds the six statuses
+  entries share (`waiting`, `running`, `succeeded`, `failed`, `cancelled`, `uncertain`) and places every invocation and
+  run status in them; a status it does not know, or none, is `uncertain`.
 - The release decides which version of an agent runs live. `AshAgent.ReleaseManifest` takes an optional `agent_version/2`
   (the id of the version the active release pins for an agent key, or nil). A live run's `start` pins it instead of the
   latest published version, so publishing a candidate does not make it live; with no release pinning the agent, or a

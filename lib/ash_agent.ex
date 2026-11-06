@@ -35,8 +35,10 @@ defmodule AshAgent do
   `AshAgent.ExecutionIdentity` and `AshAgent.DigestKey`, its execution paths
   (`AshAgent.Invocation.Executor`), typed failure (`AshAgent.Invocation.Failure`,
   `AshAgent.BusinessError`, the `AshAgent.FailureClass` protocol) and
-  reconciliation (`AshAgent.Invocation.Reconciler`); and agent versions
-  (`AshAgent.AgentVersion`, declared in code with `AshAgent.Agent`). The run and
-  step fragments are not built yet; `usage-rules.md` says which parts have landed.
+  reconciliation (`AshAgent.Invocation.Reconciler`); agent versions
+  (`AshAgent.AgentVersion`, declared in code with `AshAgent.Agent`); durable runs
+  (`AshAgent.Run`, `AshAgent.Step`); and the execution-history behaviour
+  (`AshAgent.Execution.Source`) with its shared statuses (`AshAgent.Execution.Status`).
+  `usage-rules.md` says which parts have landed.
   """
 end
