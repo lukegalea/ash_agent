@@ -68,12 +68,22 @@ defmodule AshAgent.Effects do
         default: :none,
         doc: """
         `:none` runs it without asking; `:confirm` asks before it runs; `:four_eyes` needs a second person, who
-        is not the one asking, from `approver_role`.
+        is not the one asking, from `approver_role`. Which person decides is the approval posture in force
+        (`AshAgent.Approval.Posture`), except for `:none` and `:confirm`, which no posture changes.
         """
       ],
       approver_role: [
         type: :atom,
         doc: "The role whose holders may approve it. Required with `approval: :four_eyes`."
+      ],
+      posture_floor?: [
+        type: :boolean,
+        default: false,
+        doc: """
+        Keeps `approval: :four_eyes` at `:standard` behaviour under every posture (`AshAgent.Approval.Posture`):
+        another holder of the approver role approves, the requester excluded, always. Accepted only with
+        `approval: :four_eyes`.
+        """
       ],
       approval_expires_in: [
         type: :keyword_list,
@@ -145,8 +155,8 @@ defmodule AshAgent.Effects do
     * every declaration names an action of the resource, at most once;
     * `read_only?: true` is accepted only on an Ash `:read` action, because "read-only" is a fact about the action's
       type, not a hint someone may get wrong;
-    * `approval: :four_eyes` names an `approver_role`, and `approver_role` and `approval_expires_in` appear only
-      with an approval;
+    * `approval: :four_eyes` names an `approver_role`, `approver_role` and `approval_expires_in` appear only
+      with an approval, and `posture_floor?: true` appears only with `approval: :four_eyes`;
     * `reconcile_with` names a `:read` or generic action of the resource;
     * `preconditions` name arguments or accepted attributes of the action.
 

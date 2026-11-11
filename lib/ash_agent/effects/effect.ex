@@ -29,6 +29,7 @@ defmodule AshAgent.Effects.Effect do
     idempotent?: false,
     open_world?: true,
     approval: :none,
+    posture_floor?: false,
     preconditions: [],
     __identifier__: nil,
     __spark_metadata__: nil
@@ -54,6 +55,7 @@ defmodule AshAgent.Effects.Effect do
           idempotent?: boolean(),
           open_world?: boolean(),
           approval: :none | :confirm | :four_eyes,
+          posture_floor?: boolean(),
           approver_role: atom() | nil,
           approval_expires_in: keyword() | nil,
           intent: :inspect | :propose | :approve | :test | :execute | nil,
@@ -85,6 +87,7 @@ defmodule AshAgent.Effects.Effect do
       "idempotent" => effect.idempotent?,
       "open_world" => effect.open_world?,
       "approval" => Atom.to_string(effect.approval),
+      "posture_floor" => effect.posture_floor?,
       "approver_role" => atom_string(effect.approver_role),
       "approval_expires_in" => expires_in(effect.approval_expires_in),
       "intent" => atom_string(effect.intent),

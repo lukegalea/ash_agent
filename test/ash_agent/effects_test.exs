@@ -67,6 +67,7 @@ defmodule AshAgent.EffectsTest do
                "idempotent" => true,
                "open_world" => true,
                "approval" => "four_eyes",
+               "posture_floor" => false,
                "approver_role" => "credentialing_committee",
                "approval_expires_in" => %{"days" => 3},
                "intent" => "execute",
@@ -201,6 +202,30 @@ defmodule AshAgent.EffectsTest do
         end
 
       assert error.message =~ "approval: :four_eyes without an approver_role"
+    end
+
+    test "a posture floor is accepted only on a four-eyes approval" do
+      error =
+        assert_dsl_error %DslError{path: [:effects, :action, :suspend]} do
+          defmodule Elixir.AshAgent.EffectsTest.FloorOnConfirm do
+            use Ash.Resource, domain: nil, extensions: [AshAgent.Effects]
+
+            effects do
+              action :suspend, kind: :edit, approval: :confirm, posture_floor?: true
+            end
+
+            actions do
+              update :suspend
+            end
+
+            attributes do
+              uuid_primary_key :id
+            end
+          end
+        end
+
+      assert error.message =~
+               "posture_floor?: true, which is accepted only with approval: :four_eyes"
     end
 
     test "an approver role or expiry without an approval fails compilation" do
