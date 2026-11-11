@@ -195,10 +195,12 @@ defmodule AshAgent.Invocation.Changes.Request do
   # The request as it will be written, for the host to build its actor from as
   # `actor_for/1` does from the stored row at a claim: every attribute set so far, the
   # principal and lineage included, and the tenant, which Ash writes to an attribute
-  # only when the create runs.
+  # only when the create runs. It has no primary key yet: applying the attributes here
+  # would make one up that the stored row will not have.
   defp unwritten(changeset) do
-    {:ok, row} = Ash.Changeset.apply_attributes(changeset, force?: true)
     resource = changeset.resource
+    {:ok, row} = Ash.Changeset.apply_attributes(changeset, force?: true)
+    row = Map.merge(row, Map.new(Ash.Resource.Info.primary_key(resource), &{&1, nil}))
 
     if Ash.Resource.Info.multitenancy_strategy(resource) == :attribute and
          not is_nil(changeset.to_tenant),

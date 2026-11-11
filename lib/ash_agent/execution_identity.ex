@@ -92,7 +92,7 @@ defmodule AshAgent.ExecutionIdentity do
   is asked to approve it (`AshAgent.Invocation.Target.precheck/3`). `request` is the
   row as it will be written but is not yet stored: every attribute the request has set,
   the principal and lineage included, and the tenant in the host's multitenancy
-  attribute. A host builds the actor from it as `actor_for/1` builds one from the
+  attribute, but no primary key. A host builds the actor from it as `actor_for/1` builds one from the
   stored row at a claim, and usually by calling it. A refusal (`{:error, reason}`) is
   the principal unable to act now, and the request is refused as not permitted.
 

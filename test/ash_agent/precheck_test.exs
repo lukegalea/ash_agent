@@ -159,7 +159,8 @@ defmodule AshAgent.PrecheckTest do
       assert_received {:precheck_request, request}
       assert request.executing_principal == row.executing_principal
       assert {request.target, request.kind, request.run_id} == {row.target, row.kind, nil}
-      assert {request.id, request.status} == {row.id, :requested}
+      # Not stored yet: no primary key, and the state the request starts from.
+      assert {request.id, request.status} == {nil, :requested}
     end
   end
 
