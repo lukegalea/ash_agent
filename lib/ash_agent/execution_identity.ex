@@ -19,7 +19,7 @@ defmodule AshAgent.ExecutionIdentity do
       `executing_principal` and is part of what makes two requests with one key the same
       request.
     * **When a live request is prechecked**, `precheck_actor/1` builds the actor to
-      check the request with, from that principal, before any row exists: what the
+      check the request with, from the row as it will be written, before it is stored: what the
       action, and the principal's authority, would refuse is refused at request time,
       before anyone is asked to approve it. Optional; without it the first checks the
       request faces are the claim's.
@@ -85,20 +85,22 @@ defmodule AshAgent.ExecutionIdentity do
   @callback actor_for(invocation :: Ash.Resource.record()) :: {:ok, term()} | {:error, term()}
 
   @doc """
-  The actor a live request is prechecked as, before any row exists to claim.
+  The actor a live request is prechecked as, before its row is written.
 
   `request` has named the principal the work will execute as (`principal_for/2`); with
   this actor it checks what the action and that principal would refuse, before anyone
-  is asked to approve it (`AshAgent.Invocation.Target.precheck/3`). There is no row to
-  read, so the actor is built from the principal alone, as `actor_for/1` builds it at
-  the claim. A refusal (`{:error, reason}`) is the principal unable to act now, and the
-  request is refused as not permitted.
+  is asked to approve it (`AshAgent.Invocation.Target.precheck/3`). `request` is the
+  row as it will be written but is not yet stored: every attribute the request has set,
+  the principal and lineage included, and the tenant in the host's multitenancy
+  attribute, but no primary key. A host builds the actor from it as `actor_for/1` builds one from the
+  stored row at a claim, and usually by calling it. A refusal (`{:error, reason}`) is
+  the principal unable to act now, and the request is refused as not permitted.
 
   Optional: a host that does not implement it gets no request-time pre-check. The
   action's own checks, and the authority `actor_for/1` builds at the claim, still
   decide at execution exactly as before, so nothing is enforced less — only later.
   """
-  @callback precheck_actor(principal()) :: {:ok, term()} | {:error, term()}
+  @callback precheck_actor(request :: Ash.Resource.record()) :: {:ok, term()} | {:error, term()}
 
   @doc """
   The principal `actor` runs as, when it is an actor `actor_for/1` builds: the inverse of

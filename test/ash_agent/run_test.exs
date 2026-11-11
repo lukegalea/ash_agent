@@ -410,6 +410,10 @@ defmodule AshAgent.RunTest do
       assert row.invocation_key == "run:#{run.id}:1:call_a"
       assert {row.run_id, row.step_seq, row.tool_call_id} == {run.id, 1, "call_a"}
       assert row.kind == :tool_call
+
+      # The host built the pre-check actor from a row carrying the run's lineage.
+      run_id = run.id
+      assert_received {:precheck_request, %{run_id: ^run_id, kind: :tool_call}}
       assert row.status == :ready
       assert row.executing_principal == %{type: :person, id: nurse.id}
       assert row.args == %{"licence_number" => "RN-1", "clinician_name" => "SYNTHETIC Dana Reyes"}
