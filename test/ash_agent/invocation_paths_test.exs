@@ -267,6 +267,18 @@ defmodule AshAgent.InvocationPathsTest do
       assert :skipped = execute(row)
     end
 
+    test "a business error at execution is final, and a process sees its code", %{
+      nurse: nurse
+    } do
+      check = Ash.create!(CredentialCheck, %{licence_number: "SUSPENDED-1"}, action: :record)
+      row = invoke!(nurse, @standing, %{"id" => check.id})
+
+      assert :failed = execute(row)
+      failed = get(row)
+      assert {failed.failure_class, failed.error_code} == {:business, "licence_suspended"}
+      assert Failure.bpmn(failed) == {:error, {:bpmn_error, "licence_suspended", %{}}}
+    end
+
     test "a refused budget is its own class", %{nurse: nurse} do
       Board.mode(:over_budget)
       row = invoke!(nurse, @post, notice())

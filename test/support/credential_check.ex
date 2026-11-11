@@ -13,6 +13,16 @@ defmodule AshAgent.Test.CredentialCheck do
       no way to find out afterwards what happened. It refuses a licence the board has
       asked the clinic never to send (one starting "BLOCKED"), which a request learns
       before anything runs.
+    * `:post_notice` sends a notice to the fake board (`AshAgent.Test.Board`), which is
+      not idempotent; `:find_notice` asks the board by invocation key whether it holds
+      one, and is its `reconcile_with`.
+    * `:post_notice_keyed` sends the same notice with the invocation key as the board's
+      idempotency key, and is declared idempotent; `:find_notice` is its lookup too.
+    * `:refer` hands a referral to the board and returns a dispatch: the outcome comes
+      back later. `:refer_keyed` is the idempotent kind.
+    * `:confirm_standing` refuses a lapsed licence with a business error, which its
+      validation finds at request time, and a suspended one, which only the board's
+      register read inside the transaction finds, at execution.
     * `:suspend` updates a check after a second person from the credentialing committee
       approves, within a day: an approval bound to a subject.
     * `:restrict` and `:page_board` are governed (`AshAgent.Validations.Governed`): an
@@ -240,6 +250,18 @@ defmodule AshAgent.Test.CredentialCheck do
           do: {:error, AshAgent.BusinessError.exception(code: "licence_lapsed")},
           else: :ok
       end
+
+      # The register is read inside the transaction, so only execution can find a
+      # suspension: no request-time pre-check runs this hook.
+      change before_action(fn changeset, _context ->
+               if String.starts_with?(changeset.data.licence_number, "SUSPENDED"),
+                 do:
+                   Ash.Changeset.add_error(
+                     changeset,
+                     AshAgent.BusinessError.exception(code: "licence_suspended")
+                   ),
+                 else: changeset
+             end)
 
       change set_attribute(:verified?, true)
     end

@@ -3,30 +3,32 @@
 
 defmodule AshAgent.Invocation.Target do
   @moduledoc """
-   The action an invocation runs: how its name resolves, how its arguments are checked
-   before it runs, and how it is run.
+  The action an invocation runs: how its name resolves, how its arguments are checked
+  before it runs, and how it is run.
 
-   ## Naming
+  ## Naming
 
-   A target is written `"<resource module>.<action>"`, for example
-   `"MyClinic.Credentials.Credential.activate"`. It resolves only to a resource module that
-   is already loaded, to one of its actions, and only if that action has an effects
-   declaration (`AshAgent.Effects`): a target with no declaration cannot be governed,
-   because nothing says whether it needs approval or reaches outside the application.
+  A target is written `"<resource module>.<action>"`, for example
+  `"MyClinic.Credentials.Credential.activate"`. It resolves only to a resource module that
+  is already loaded, to one of its actions, and only if that action has an effects
+  declaration (`AshAgent.Effects`): a target with no declaration cannot be governed,
+  because nothing says whether it needs approval or reaches outside the application.
 
-   `args` is a map of the action's inputs, as JSON would carry them. For an update or a
-   destroy it also carries the subject's primary key (`"id"` for most resources), which
-   names the record and is not an input. `prepare/3` checks them without running the
-   action or any of its changes: every key is an input or the primary key, every value
-   casts to its input's type, every required argument is present, and the subject exists.
+  ## Arguments
 
-   ## Pre-checking
+  `args` is a map of the action's inputs, as JSON would carry them. For an update or a
+  destroy it also carries the subject's primary key (`"id"` for most resources), which
+  names the record and is not an input. `prepare/3` checks them without running the
+  action or any of its changes: every key is an input or the primary key, every value
+  casts to its input's type, every required argument is present, and the subject exists.
 
-   A live request that fits its inputs is then checked against the action itself, as the
-   principal it will execute as, by `precheck/3`: the action's own changes and
-   validations — including a state machine's transition check — and the principal's
-   authority over exactly that change. What either would refuse is refused at request
-   time, before anyone is asked to approve it; execution checks it all again.
+  ## Pre-checking
+
+  A live request that fits its inputs is then checked against the action itself, as the
+  principal it will execute as, by `precheck/3`: the action's own changes and
+  validations — including a state machine's transition check — and the principal's
+  authority over exactly that change. What either would refuse is refused at request
+  time, before anyone is asked to approve it; execution checks it all again.
   """
 
   alias AshAgent.Effects.Effect
@@ -222,7 +224,7 @@ defmodule AshAgent.Invocation.Target do
 
   defp field_of(error) do
     case Map.get(error, :field) do
-      nil -> error |> Map.get(:fields, []) |> List.first()
+      nil -> error |> Map.get(:fields) |> List.wrap() |> List.first()
       field -> field
     end
   end

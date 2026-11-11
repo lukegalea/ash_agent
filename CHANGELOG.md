@@ -17,6 +17,7 @@ Nothing has been released yet.
 Requires Elixir 1.20 or later.
 
 ### Features:
+
 - Request-time pre-check. A live request that fits its target's inputs is then checked against the action itself, as
   the principal it will execute as, through the new optional `c:AshAgent.ExecutionIdentity.precheck_actor/1` (the
   actor built from the principal, before any row exists; a host that does not implement it keeps today's behaviour).
@@ -29,7 +30,9 @@ Requires Elixir 1.20 or later.
   the action's input contract) as the new `rejection_details` attribute, marked `sensitive?` like `args`. A run's
   next model turn reads them: the tool result of a request-time rejection is
   `{"error": "not run: rejected", "code": ..., "errors": [...]}`. Runs that are not live are not prechecked, and
-  execution checks everything it did before. Hosts generate a migration for the column.
+  execution checks everything it did before. Hosts generate a migration for the column. Breaking:
+  `AshAgent.Invocation.Target.prepare/3` returns `{:error, errors}` as a list of error maps (`message`, and `path` and
+  `did_you_mean` when known) instead of strings; `AshAgent.Invocation.Target.messages/1` joins them as before.
 - A request for more information. An approver may answer an invocation awaiting approval with `request_info` instead
   of a decision: `apply_decision` with `outcome: :request_info` parks the row in the new `request_info` status, which is
   never claimed and to which no decision applies, and `provide_info` returns it to `awaiting_approval` once the

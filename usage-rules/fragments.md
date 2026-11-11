@@ -160,6 +160,7 @@ Which path a claimed row takes depends on the target's effects declaration:
 | You add | Why |
 |---|---|
 | Tenancy and an owner column | The fragment has neither; stamp the owner on `request` from the actor |
+| Policies | `invoke` and `request` for the people who may ask; `retry` and `request_cancel` for the people who may; every other action for your job runner alone |
 | Encryption of `args`, `result` and `rejection_details` | All three are marked `sensitive?`; seal them if you encrypt content at rest |
 | A check of `parent` | The fragment records the parent; whether the requester may name it is yours to decide |
 | The `:execute` trigger | `request` and `apply_decision` enqueue it for every ready row |
