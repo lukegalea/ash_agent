@@ -373,6 +373,10 @@ defmodule AshAgent.RunTest do
       assert {row.status, row.failure_class} == {:rejected, :rejected}
       assert row.error_code =~ "shoe_size is not an input"
 
+      # The host built the pre-check actor from a row carrying the run's lineage.
+      run_id = run.id
+      assert_received {:precheck_request, %{run_id: ^run_id}}
+
       # Its next model turn reads the field and the message.
       assert {:ok, :completed} = step(run)
 

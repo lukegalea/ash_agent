@@ -38,7 +38,11 @@ defmodule AshAgent.Test.ExecutionIdentity do
   def actor_for(%{executing_principal: principal}), do: build(principal)
 
   @impl true
-  def precheck_actor(principal), do: build(principal)
+  def precheck_actor(%{executing_principal: _} = request) do
+    # Tests read what the package hands over: the row as it will be written.
+    send(self(), {:precheck_request, request})
+    actor_for(request)
+  end
 
   # The actor the principal runs as: a person as themselves, an automation as both
   # itself and the person it acts for. Either having lost their authority refuses it,

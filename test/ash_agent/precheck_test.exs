@@ -151,6 +151,18 @@ defmodule AshAgent.PrecheckTest do
     end
   end
 
+  describe "the pre-check actor" do
+    test "is built from the row as it will be written, before it is stored", %{nurse: nurse} do
+      row =
+        invoke!(nurse, @reviewed, %{"licence_number" => "RN-3", "clinician_name" => "Dana Reyes"})
+
+      assert_received {:precheck_request, request}
+      assert request.executing_principal == row.executing_principal
+      assert {request.target, request.kind, request.run_id} == {row.target, row.kind, nil}
+      assert {request.id, request.status} == {row.id, :requested}
+    end
+  end
+
   describe "a valid request" do
     test "still reaches awaiting_approval, with its approval bound", %{nurse: nurse} do
       row =

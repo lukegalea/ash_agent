@@ -20,7 +20,8 @@ Requires Elixir 1.20 or later.
 
 - Request-time pre-check. A live request that fits its target's inputs is then checked against the action itself, as
   the principal it will execute as, through the new optional `c:AshAgent.ExecutionIdentity.precheck_actor/1` (the
-  actor built from the principal, before any row exists; a host that does not implement it keeps today's behaviour).
+  actor built from the request's row as it will be written, tenant and lineage included, before it is stored; a host
+  usually answers with `actor_for/1`, and one that does not implement it keeps today's behaviour).
   `AshAgent.Invocation.Target.precheck/3` builds the real input — `for_create`, `for_update`, `for_destroy` or
   `Ash.ActionInput.for_action` — running the action's changes and validations, a state machine's transition check
   included, but no before or after hooks, and then asks `Ash.can?` of exactly that change. A failure rejects the row

@@ -173,10 +173,9 @@ defmodule AshAgent.Invocation.Changes.Request do
 
   defp precheck(changeset, target, :live, prepared) do
     identity = Info.execution_identity(changeset.resource)
-    principal = Ash.Changeset.get_attribute(changeset, :executing_principal)
 
     if function_exported?(identity, :precheck_actor, 1) do
-      case identity.precheck_actor(principal) do
+      case identity.precheck_actor(unwritten(changeset)) do
         {:ok, actor} ->
           case Target.precheck(target, prepared, actor: actor, tenant: changeset.tenant) do
             :ok -> {:ok, changeset}
@@ -191,6 +190,20 @@ defmodule AshAgent.Invocation.Changes.Request do
     else
       {:ok, changeset}
     end
+  end
+
+  # The request as it will be written, for the host to build its actor from as
+  # `actor_for/1` does from the stored row at a claim: every attribute set so far, the
+  # principal and lineage included, and the tenant, which Ash writes to an attribute
+  # only when the create runs.
+  defp unwritten(changeset) do
+    {:ok, row} = Ash.Changeset.apply_attributes(changeset, force?: true)
+    resource = changeset.resource
+
+    if Ash.Resource.Info.multitenancy_strategy(resource) == :attribute and
+         not is_nil(changeset.to_tenant),
+       do: Map.put(row, Ash.Resource.Info.multitenancy_attribute(resource), changeset.to_tenant),
+       else: row
   end
 
   defp reject(changeset, code, errors) do
