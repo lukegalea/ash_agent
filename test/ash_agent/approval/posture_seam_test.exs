@@ -29,7 +29,10 @@ defmodule AshAgent.Approval.PostureSeamTest do
 
   defp lower!(tenant, actor),
     do:
-      Domain.invoke!(@set, %{"id" => tenant.id, "approval_posture" => "small_team"}, %{key: key()},
+      Domain.invoke!(
+        @set,
+        %{"id" => tenant.id, "approval_posture" => "small_team"},
+        %{key: key()},
         actor: actor
       )
 
