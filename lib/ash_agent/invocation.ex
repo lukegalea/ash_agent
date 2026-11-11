@@ -65,7 +65,9 @@ defmodule AshAgent.Invocation do
       derives the principal (`c:AshAgent.ExecutionIdentity.principal_for/2`) and lineage,
       snapshots the effects declaration, digests the target and the arguments, captures
       the subject's `version_number`, and routes the row: `rejected` when the arguments
-      do not fit the target or name a record the caller cannot read, `awaiting_approval` when the declaration asks for an
+      do not fit the target, name a record the caller cannot read, or — a live request,
+      checked as its principal — are refused by the action or not permitted to it, with
+      the per-field errors as `rejection_details`; `awaiting_approval` when the declaration asks for an
       approval, `ready` otherwise. A ready row's `:execute` job is enqueued in the same
       transaction.
     * `claim` (update): `ready → executing`, or takes over an `executing` row whose lease
@@ -144,8 +146,8 @@ defmodule AshAgent.Invocation do
   ## What the fragment does not declare
 
   Tenancy, ownership, policies, triggers, relationships to host resources, encryption
-  and the `postgres` block. `args` and `result` are marked `sensitive?`; a host that
-  encrypts content at rest seals them.
+  and the `postgres` block. `args`, `result` and `rejection_details` are marked
+  `sensitive?`; a host that encrypts content at rest seals them.
   """
 
   use Spark.Dsl.Fragment,
@@ -724,6 +726,17 @@ defmodule AshAgent.Invocation do
     attribute :error_code, :string do
       public? true
       constraints max_length: 256
+    end
+
+    attribute :rejection_details, :map do
+      public? true
+      sensitive? true
+
+      description """
+      Why the request refused itself, when it did: one entry per input the pre-check
+      found at fault (`path`, `message`, and `did_you_mean` for an unknown input).
+      Sealed like `args` by a host that encrypts content at rest.
+      """
     end
 
     attribute :result, :map do

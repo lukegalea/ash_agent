@@ -20,11 +20,12 @@ defmodule AshAgent.Run.Stepper do
        `"journal_unreadable"`, before any model call.
     3. **Tool results**: a model turn whose calls have no result yet gets them before
        any model call. A governed call's invocation is read by its key: a finished one
-       gives its recorded result (its effect is never run again); an open one makes the
-       run wait; a missing one (the worker died before it was requested) is requested
-       now, and the run waits. An in-loop read is run again, as the executing actor and
-       with the context the loop gives its tools. Results are recorded as steps under the
-       fence.
+       gives its recorded result (its effect is never run again); one that refused
+       itself at request time gives its code and each field's error, as JSON the model
+       can act on; an open one makes the run wait; a missing one (the worker died
+       before it was requested) is requested now, and the run waits. An in-loop read is
+       run again, as the executing actor and with the context the loop gives its tools.
+       Results are recorded as steps under the fence.
     4. **Model call**, with no transaction open. What is left of the token budget is
        held for it first (`AshAgent.Run.Budget.reserve/2`); when nothing is, the run
        waits on its budget (`"token_budget"`) and no call is made. Then
@@ -271,11 +272,25 @@ defmodule AshAgent.Run.Stepper do
   end
 
   # What a finished invocation tells the model: the record it touched or the value it
-  # returned, or that it did not run and why.
+  # returned, or that it did not run and why. A row that refused itself at request time
+  # says what would fix it — its code and each field's error — read as the host seals it
+  # (`Journal.value/3`), like a result. Every other refusal keeps its one-line reason.
   defp content(%{status: :succeeded} = row, opts),
     do: Jason.encode!(Journal.value(row, :result, opts) || %{})
 
-  defp content(row, _opts) do
+  defp content(%{status: :rejected} = row, opts) do
+    case Journal.value(row, :rejection_details, opts) do
+      %{"errors" => errors} when is_list(errors) ->
+        Jason.encode!(%{error: "not run: rejected", code: row.error_code, errors: errors})
+
+      _refused_elsewhere ->
+        not_run(row)
+    end
+  end
+
+  defp content(row, _opts), do: not_run(row)
+
+  defp not_run(row) do
     reason = Enum.join(Enum.reject([row.status, row.error_code], &is_nil/1), ": ")
     Jason.encode!(%{error: "not run: #{reason}"})
   end

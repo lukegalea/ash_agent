@@ -14,7 +14,7 @@ runs are built.
 | Base resource and data layer | Nothing. Fragments assume an Ash resource whose data layer supports filtered updates | Its base resource, the `postgres` block, table and repo |
 | Attributes, calculations, lifecycle | Attributes, calculations and a state machine on each fragment, and identities on columns that are not tenant columns | Tenant and ownership columns, and the encryption of attributes the fragments mark `sensitive?` |
 | Actions | The actions of each fragment, with their changes and validations | Which actors may call which action, and the code interfaces on its own domain |
-| Executing principal | A behaviour asking who an invocation or a run executes as, who may start an agent and who requests a run's tool calls (`AshAgent.ExecutionIdentity`) | An implementation built from the host's own grants |
+| Executing principal | A behaviour asking who an invocation or a run executes as, who prechecks a request as its principal, who may start an agent and who requests a run's tool calls (`AshAgent.ExecutionIdentity`) | An implementation built from the host's own grants. Without `precheck_actor/1` a live request is not prechecked; implement it and the request is checked against the action and the principal's authority before anyone is asked to approve it |
 | Models | A behaviour asking which model and transport a run's step calls (`AshAgent.Runtime`) | An implementation over its own model profiles and call records |
 | Argument digests | HMAC-SHA256 over canonical JSON (`AshAgent.Digest`) | The key, through `AshAgent.DigestKey` |
 | Approvals | A behaviour for opening an approval and reading its decision, and the state that waits for it | An implementation over the host's approval mechanism |

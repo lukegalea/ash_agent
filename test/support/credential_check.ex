@@ -6,10 +6,13 @@ defmodule AshAgent.Test.CredentialCheck do
   A test host resource that invocations run: a clinic's check of a clinician's licence.
 
     * `:record` writes only here and needs no approval: the internal path.
-    * `:record_reviewed` is the same write, confirmed by a person first.
+    * `:record_reviewed` is the same write, confirmed by a person first, and names the
+      clinician it is about: one without `clinician_name` is refused at request time.
     * `:mark_verified` updates a check, so its subject is captured as a precondition.
     * `:notify_board` reaches outside (it only pretends to): the open-world path, with
-      no way to find out afterwards what happened.
+      no way to find out afterwards what happened. It refuses a licence the board has
+      asked the clinic never to send (one starting "BLOCKED"), which a request learns
+      before anything runs.
     * `:post_notice` sends a notice to the fake board (`AshAgent.Test.Board`), which is
       not idempotent; `:find_notice` asks the board by invocation key whether it holds
       one, and is its `reconcile_with`.
@@ -17,7 +20,9 @@ defmodule AshAgent.Test.CredentialCheck do
       idempotency key, and is declared idempotent; `:find_notice` is its lookup too.
     * `:refer` hands a referral to the board and returns a dispatch: the outcome comes
       back later. `:refer_keyed` is the idempotent kind.
-    * `:confirm_standing` refuses a lapsed licence with a business error.
+    * `:confirm_standing` refuses a lapsed licence with a business error, which its
+      validation finds at request time, and a suspended one, which only the board's
+      register read inside the transaction finds, at execution.
     * `:suspend` updates a check after a second person from the credentialing committee
       approves, within a day: an approval bound to a subject.
     * `:restrict` and `:page_board` are governed (`AshAgent.Validations.Governed`): an
@@ -163,6 +168,19 @@ defmodule AshAgent.Test.CredentialCheck do
 
     create :record_reviewed do
       accept [:licence_number, :clinician_name]
+      validate present(:clinician_name)
+    end
+
+    action :notify_board, :boolean do
+      argument :licence_number, :string, allow_nil?: false
+
+      validate fn input, _context ->
+        if String.starts_with?(input.arguments.licence_number, "BLOCKED"),
+          do: {:error, AshAgent.BusinessError.exception(code: "licence_blocked")},
+          else: :ok
+      end
+
+      run fn _input, _context -> {:ok, true} end
     end
 
     update :mark_verified do
@@ -187,11 +205,6 @@ defmodule AshAgent.Test.CredentialCheck do
     action :page_board, :boolean do
       argument :licence_number, :string, allow_nil?: false
       validate {AshAgent.Validations.Governed, invocation: AshAgent.Test.Invocation}
-      run fn _input, _context -> {:ok, true} end
-    end
-
-    action :notify_board, :boolean do
-      argument :licence_number, :string, allow_nil?: false
       run fn _input, _context -> {:ok, true} end
     end
 
@@ -237,6 +250,18 @@ defmodule AshAgent.Test.CredentialCheck do
           do: {:error, AshAgent.BusinessError.exception(code: "licence_lapsed")},
           else: :ok
       end
+
+      # The register is read inside the transaction, so only execution can find a
+      # suspension: no request-time pre-check runs this hook.
+      change before_action(fn changeset, _context ->
+               if String.starts_with?(changeset.data.licence_number, "SUSPENDED"),
+                 do:
+                   Ash.Changeset.add_error(
+                     changeset,
+                     AshAgent.BusinessError.exception(code: "licence_suspended")
+                   ),
+                 else: changeset
+             end)
 
       change set_attribute(:verified?, true)
     end

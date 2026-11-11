@@ -44,6 +44,11 @@ defmodule AshAgent.Test.Domain do
       define :retry_invocation, action: :retry
     end
 
+    resource AshAgent.Test.Referral do
+      define :start_referral, action: :draft
+      define :list_referrals, action: :read
+    end
+
     resource AshAgent.Test.AgentVersion do
       define :register_agent, action: :register_from_code, args: [:agent]
       define :create_agent_draft, action: :create_draft

@@ -251,14 +251,32 @@ defmodule AshAgent.InvocationPathsTest do
       assert {:error, _} = Domain.retry_invocation(get(row))
     end
 
-    test "a business error is final, and a process sees its code", %{nurse: nurse} do
+    test "a business refusal a validation makes is caught at request time", %{
+      nurse: nurse
+    } do
       check = Ash.create!(CredentialCheck, %{licence_number: "LAPSED-1"}, action: :record)
+      row = invoke!(nurse, @standing, %{"id" => check.id})
+
+      assert {row.status, row.failure_class, row.error_code} ==
+               {:rejected, :rejected, "invalid_request"}
+
+      assert [%{"message" => message}] = row.rejection_details["errors"]
+      assert message =~ "licence_lapsed"
+
+      # Nothing ran, so there is nothing to execute.
+      assert :skipped = execute(row)
+    end
+
+    test "a business error at execution is final, and a process sees its code", %{
+      nurse: nurse
+    } do
+      check = Ash.create!(CredentialCheck, %{licence_number: "SUSPENDED-1"}, action: :record)
       row = invoke!(nurse, @standing, %{"id" => check.id})
 
       assert :failed = execute(row)
       failed = get(row)
-      assert {failed.failure_class, failed.error_code} == {:business, "licence_lapsed"}
-      assert Failure.bpmn(failed) == {:error, {:bpmn_error, "licence_lapsed", %{}}}
+      assert {failed.failure_class, failed.error_code} == {:business, "licence_suspended"}
+      assert Failure.bpmn(failed) == {:error, {:bpmn_error, "licence_suspended", %{}}}
     end
 
     test "a refused budget is its own class", %{nurse: nurse} do
