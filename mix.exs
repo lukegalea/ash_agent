@@ -95,6 +95,7 @@ defmodule AshAgent.MixProject do
       extras: [
         {"README.md", title: "Home"},
         "documentation/topics/what-the-host-supplies.md",
+        "documentation/topics/approval-postures.md",
         "documentation/topics/the-boundary.md",
         "CHANGELOG.md"
       ],
