@@ -9,7 +9,8 @@ defmodule AshAgent.Test.ExecutionIdentity do
   an `:automation` name, the person it acts `:for` (a person map, or nil) and an
   `:agent`; it runs as an actor carrying both names and the agent, which
   `principal_of/1` reads back. A name in `revoke/1`'s list has lost its authority, so
-  `actor_for/1` refuses it, the way a host refuses a principal whose grant was revoked.
+  `precheck_actor/1` refuses it at a request's pre-check and `actor_for/1` at its
+  claim, the way a host refuses a principal whose grant was revoked.
   An automation is refused when either it or the person it acts for has lost theirs,
   since what both allow is then nothing.
   """
@@ -34,7 +35,15 @@ defmodule AshAgent.Test.ExecutionIdentity do
   def principal_for(_actor, _context), do: {:error, :not_a_person}
 
   @impl true
-  def actor_for(%{executing_principal: principal}) do
+  def actor_for(%{executing_principal: principal}), do: build(principal)
+
+  @impl true
+  def precheck_actor(principal), do: build(principal)
+
+  # The actor the principal runs as: a person as themselves, an automation as both
+  # itself and the person it acts for. Either having lost their authority refuses it,
+  # at a claim as at a request's pre-check.
+  defp build(principal) do
     case AshAgent.ExecutionIdentity.identity(principal) do
       {"automation", name, person, agent} ->
         if Enum.any?([name, person], &revoked?/1),
