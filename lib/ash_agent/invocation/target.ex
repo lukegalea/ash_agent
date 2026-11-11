@@ -3,34 +3,50 @@
 
 defmodule AshAgent.Invocation.Target do
   @moduledoc """
-  The action an invocation runs: how its name resolves, how its arguments are checked
-  before it runs, and how it is run.
+   The action an invocation runs: how its name resolves, how its arguments are checked
+   before it runs, and how it is run.
 
-  ## Naming
+   ## Naming
 
-  A target is written `"<resource module>.<action>"`, for example
-  `"MyClinic.Credentials.Credential.activate"`. It resolves only to a resource module that
-  is already loaded, to one of its actions, and only if that action has an effects
-  declaration (`AshAgent.Effects`): a target with no declaration cannot be governed,
-  because nothing says whether it needs approval or reaches outside the application.
+   A target is written `"<resource module>.<action>"`, for example
+   `"MyClinic.Credentials.Credential.activate"`. It resolves only to a resource module that
+   is already loaded, to one of its actions, and only if that action has an effects
+   declaration (`AshAgent.Effects`): a target with no declaration cannot be governed,
+   because nothing says whether it needs approval or reaches outside the application.
 
-  ## Arguments
+   `args` is a map of the action's inputs, as JSON would carry them. For an update or a
+   destroy it also carries the subject's primary key (`"id"` for most resources), which
+   names the record and is not an input. `prepare/3` checks them without running the
+   action or any of its changes: every key is an input or the primary key, every value
+   casts to its input's type, every required argument is present, and the subject exists.
 
-  `args` is a map of the action's inputs, as JSON would carry them. For an update or a
-  destroy it also carries the subject's primary key (`"id"` for most resources), which
-  names the record and is not an input. `prepare/3` checks them without running the
-  action or any of its changes: every key is an input or the primary key, every value
-  casts to its input's type, every required argument is present, and the subject exists.
+   ## Pre-checking
+
+   A live request that fits its inputs is then checked against the action itself, as the
+   principal it will execute as, by `precheck/3`: the action's own changes and
+   validations — including a state machine's transition check — and the principal's
+   authority over exactly that change. What either would refuse is refused at request
+   time, before anyone is asked to approve it; execution checks it all again.
   """
 
   alias AshAgent.Effects.Effect
-  alias AshAgent.Invocation.{Dispatch, SubjectUnreachable}
+  alias AshAgent.Invocation.{Dispatch, SubjectUnreachable, Ungoverned}
 
   @typedoc "A resolved target."
   @type t :: %{
           resource: Ash.Resource.t(),
           action: Ash.Resource.Actions.action(),
           effect: Effect.t()
+        }
+  @typedoc """
+  One error of a checked request: what is wrong (`message`), the input it is about
+  (`path`), and, for an input the action does not take, the closest name it does
+  (`did_you_mean`).
+  """
+  @type error :: %{
+          required(:message) => String.t(),
+          optional(:path) => String.t(),
+          optional(:did_you_mean) => String.t()
         }
 
   @doc "Resolves `name` to its resource, action and effects declaration."
@@ -81,16 +97,17 @@ defmodule AshAgent.Invocation.Target do
   Checks `args` against the target's inputs without running it.
 
   Returns `{:ok, prepared}` with the cast inputs and, for an update or a destroy, the
-  subject record, or `{:error, messages}`.
+  subject record, or `{:error, errors}` with one error per input that does not fit.
 
   The subject is read as the caller: `opts` carry the request's `actor`, `tenant`,
   `authorize?` and `context`. A record the caller cannot read gets the same message as
   one that does not exist, so a request tells its caller nothing about records outside
   what they may read, not even whether one exists. Whether the executing principal may
-  act on the subject is decided again when the target runs.
+  act on the subject is decided by `precheck/3`, and again when the target runs.
   """
   @spec prepare(t(), map(), keyword()) ::
-          {:ok, %{inputs: map(), subject: Ash.Resource.record() | nil}} | {:error, [String.t()]}
+          {:ok, %{inputs: map(), subject: Ash.Resource.record() | nil}}
+          | {:error, [error()]}
   def prepare(%{resource: resource, action: action}, args, opts) when is_map(args) do
     args = Map.new(args, fn {key, value} -> {to_string(key), value} end)
     {pk, inputs} = Map.split(args, primary_key_names(resource, action))
@@ -101,7 +118,114 @@ defmodule AshAgent.Invocation.Target do
     end
   end
 
-  def prepare(_target, _args, _opts), do: {:error, ["args must be a map"]}
+  def prepare(_target, _args, _opts), do: {:error, [%{message: "args must be a map"}]}
+
+  @doc """
+  The errors of a checked request as one string, each error's message joined by a
+  semicolon: what the row's `error_code` carries after the code that names the check.
+  """
+  @spec messages([error()]) :: String.t()
+  def messages(errors), do: Enum.map_join(errors, "; ", & &1.message)
+
+  @doc """
+  Checks a prepared request (`prepare/3`) against the target's action, without running
+  it.
+
+  The real input is built as `opts[:actor]`, in `opts[:tenant]`:
+  `Ash.Changeset.for_create/4`, `for_update/4` or `for_destroy/4` on the subject, or
+  `Ash.ActionInput.for_action/4` for a generic action. Building it runs the action's
+  changes and validations — including a state machine's transition check — but no
+  before or after hooks: this is a check, not a dry run. A build that fails is
+  `{:error, :invalid_request, errors}`, one error per input it is about. An action
+  guarded by `AshAgent.Validations.Governed` refuses every build that is not its own
+  invocation running it; that refusal is expected here — the invocation this request
+  would create is what will satisfy it — so it is not an error.
+
+  A build that holds is asked `Ash.can?` as the same actor: either the principal may
+  make exactly this change or not. A refusal is `{:error, :not_permitted, errors}`
+  whose message is always "not permitted": never why, and never whether a record
+  exists, like the caller's own read of the subject in `prepare/3`.
+
+  A read is not prechecked (`:ok`): it has no changes or validations, and nothing is
+  decided about its records until it runs.
+  """
+  @spec precheck(t(), %{inputs: map(), subject: Ash.Resource.record() | nil}, keyword()) ::
+          :ok | {:error, :invalid_request | :not_permitted, [error()]}
+  def precheck(%{action: %{type: :read}}, _prepared, _opts), do: :ok
+
+  def precheck(target, prepared, opts) do
+    case build(target, prepared, opts) do
+      {:error, errors} ->
+        {:error, :invalid_request, errors}
+
+      built ->
+        if Ash.can?(built, opts[:actor], Keyword.take(opts, [:tenant])),
+          do: :ok,
+          else: {:error, :not_permitted, [%{message: "not permitted"}]}
+    end
+  end
+
+  defp build(
+         %{resource: resource, action: %{type: :create, name: name}},
+         %{inputs: inputs},
+         opts
+       ),
+       do: check(Ash.Changeset.for_create(resource, name, inputs, opts))
+
+  defp build(
+         %{resource: _resource, action: %{type: :update, name: name}},
+         %{inputs: inputs, subject: subject},
+         opts
+       ),
+       do: check(Ash.Changeset.for_update(subject, name, inputs, opts))
+
+  defp build(
+         %{resource: _resource, action: %{type: :destroy, name: name}},
+         %{inputs: inputs, subject: subject},
+         opts
+       ),
+       do: check(Ash.Changeset.for_destroy(subject, name, inputs, opts))
+
+  defp build(
+         %{resource: resource, action: %{type: :action, name: name}},
+         %{inputs: inputs},
+         opts
+       ),
+       do: check(Ash.ActionInput.for_action(resource, name, inputs, opts))
+
+  # The ungoverned refusal is the action guarding its own door: at request time no
+  # invocation exists to satisfy it, and at execution one will. Every other error the
+  # build made is the request's.
+  defp check(built) do
+    errors = Enum.reject(built.errors, &(&1.__struct__ == Ungoverned))
+
+    if errors == [],
+      do: built,
+      else: {:error, field_errors(errors)}
+  end
+
+  defp field_errors(errors),
+    do: Enum.map(errors, &maybe_put(%{message: Exception.message(&1)}, :path, path(&1)))
+
+  # The input an error is about, as one name: the path Ash gave it, and the field at
+  # the end of it. Not every error is about an input.
+  defp path(error) do
+    path = List.wrap(Map.get(error, :path))
+    field = field_of(error)
+
+    cond do
+      is_nil(field) and path == [] -> nil
+      is_nil(field) -> Enum.join(path, ".")
+      true -> Enum.join(path ++ [field], ".")
+    end
+  end
+
+  defp field_of(error) do
+    case Map.get(error, :field) do
+      nil -> error |> Map.get(:fields, []) |> List.first()
+      field -> field
+    end
+  end
 
   @doc """
   The preconditions captured with a request: the subject's `version_number`, when the
@@ -456,18 +580,18 @@ defmodule AshAgent.Invocation.Target do
       Enum.reduce(inputs, {%{}, []}, fn {key, value}, {cast, errors} ->
         case Map.fetch(fields, key) do
           {:ok, field} -> cast_one(field, value, cast, errors)
-          :error -> {cast, ["#{key} is not an input of #{action.name}" | errors]}
+          :error -> {cast, [unknown(action, fields, key) | errors]}
         end
       end)
 
     missing =
       for {key, field} <- fields, field.required?, not Map.has_key?(inputs, key) do
-        "#{key} is required"
+        %{path: key, message: "#{key} is required"}
       end
 
-    case Enum.reverse(errors) ++ Enum.sort(missing) do
+    case Enum.reverse(errors) ++ Enum.sort_by(missing, & &1.message) do
       [] -> {:ok, cast}
-      messages -> {:error, messages}
+      errors -> {:error, errors}
     end
   end
 
@@ -476,9 +600,35 @@ defmodule AshAgent.Invocation.Target do
          {:ok, value} <- Ash.Type.apply_constraints(field.type, value, field.constraints) do
       {Map.put(cast, field.name, value), errors}
     else
-      _ -> {cast, ["#{field.name} is not a valid #{inspect(field.type)}" | errors]}
+      _ ->
+        {cast,
+         [
+           %{path: field.name, message: "#{field.name} is not a valid #{inspect(field.type)}"}
+           | errors
+         ]}
     end
   end
+
+  # An input the action does not take, with the closest name it does when one is close
+  # enough to be what the caller meant: the Jaro distance Ash's own unknown-input
+  # error reads, at least four fifths alike.
+  defp unknown(action, fields, key) do
+    %{path: key, message: "#{key} is not an input of #{action.name}"}
+    |> maybe_put(:did_you_mean, did_you_mean(fields, key))
+  end
+
+  defp did_you_mean(fields, key) do
+    case fields
+         |> Map.keys()
+         |> Enum.map(&{&1, String.jaro_distance(&1, key)})
+         |> Enum.sort_by(fn {name, alike} -> {-alike, name} end) do
+      [{name, alike} | _] when alike >= 0.8 -> name
+      _nothing_close -> nil
+    end
+  end
+
+  defp maybe_put(map, _key, nil), do: map
+  defp maybe_put(map, key, value), do: Map.put(map, key, value)
 
   # The action's arguments, plus the attributes it accepts. On a create, an accepted
   # attribute that cannot be nil and has no default is required; on other actions an
@@ -517,11 +667,14 @@ defmodule AshAgent.Invocation.Target do
 
     if Enum.all?(names, &Map.has_key?(pk, Atom.to_string(&1))) do
       case get(resource, pk, opts) do
-        {:ok, record} -> {:ok, record}
-        {:error, _not_found_or_forbidden} -> {:error, ["the record to act on was not found"]}
+        {:ok, record} ->
+          {:ok, record}
+
+        {:error, _not_found_or_forbidden} ->
+          {:error, [%{message: "the record to act on was not found"}]}
       end
     else
-      {:error, ["#{Enum.join(names, ", ")} must name the record to act on"]}
+      {:error, [%{message: "#{Enum.join(names, ", ")} must name the record to act on"}]}
     end
   end
 

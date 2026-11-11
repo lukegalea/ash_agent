@@ -6,18 +6,23 @@ defmodule AshAgent.ExecutionIdentity do
   Who an invocation runs as. The host implements it; the package calls it and never
   reads the host's actors, grants or tenants itself.
 
-  Three moments need an answer for an invocation. An agent run (`AshAgent.Run`) adds
+  Four moments need an answer for an invocation. An agent run (`AshAgent.Run`) adds
   two, which a host using runs answers with the optional callbacks: `run_principal/3`
   (who may start an agent, and as whom its run executes) and `requester_for/1` (who asks
   for a run's tool calls). At every step of a run, `actor_for/1` is called with the run
   row, as it is at every claim of an invocation.
 
-  The three for an invocation:
+  The four for an invocation:
 
     * **When an invocation is requested**, `principal_for/2` names the principal the work
       will execute as, from the actor asking for it. The answer is stored on the row as
       `executing_principal` and is part of what makes two requests with one key the same
       request.
+    * **When a live request is prechecked**, `precheck_actor/1` builds the actor to
+      check the request with, from that principal, before any row exists: what the
+      action, and the principal's authority, would refuse is refused at request time,
+      before anyone is asked to approve it. Optional; without it the first checks the
+      request faces are the claim's.
     * **When an invocation is claimed**, `actor_for/1` builds the actor to run the target
       as, from the stored principal. It is called at every claim, so authority comes from
       the host's grants as they are then, never from what the requester could do when
@@ -80,6 +85,22 @@ defmodule AshAgent.ExecutionIdentity do
   @callback actor_for(invocation :: Ash.Resource.record()) :: {:ok, term()} | {:error, term()}
 
   @doc """
+  The actor a live request is prechecked as, before any row exists to claim.
+
+  `request` has named the principal the work will execute as (`principal_for/2`); with
+  this actor it checks what the action and that principal would refuse, before anyone
+  is asked to approve it (`AshAgent.Invocation.Target.precheck/3`). There is no row to
+  read, so the actor is built from the principal alone, as `actor_for/1` builds it at
+  the claim. A refusal (`{:error, reason}`) is the principal unable to act now, and the
+  request is refused as not permitted.
+
+  Optional: a host that does not implement it gets no request-time pre-check. The
+  action's own checks, and the authority `actor_for/1` builds at the claim, still
+  decide at execution exactly as before, so nothing is enforced less — only later.
+  """
+  @callback precheck_actor(principal()) :: {:ok, term()} | {:error, term()}
+
+  @doc """
   The principal `actor` runs as, when it is an actor `actor_for/1` builds: the inverse of
   `actor_for/1`, read from the actor alone, without querying. `:error` for any other
   actor. `AshAgent.Validations.Governed` calls it to check that a governed action runs
@@ -110,7 +131,7 @@ defmodule AshAgent.ExecutionIdentity do
   """
   @callback requester_for(run :: Ash.Resource.record()) :: {:ok, term()} | {:error, term()}
 
-  @optional_callbacks run_principal: 3, requester_for: 1
+  @optional_callbacks run_principal: 3, requester_for: 1, precheck_actor: 1
 
   @doc """
   The principal as RFC 8693 delegation (section 4.1, the `act` claim), or `nil` for a

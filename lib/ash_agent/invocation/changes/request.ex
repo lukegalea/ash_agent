@@ -18,9 +18,16 @@ defmodule AshAgent.Invocation.Changes.Request do
        `invocation` section); any other request is `:live`. A row that is not live is
        routed `ready` even when its declaration asks for an approval, because its target
        will not run (`AshAgent.Invocation`, "Invocations of a run that is not live");
-    5. the arguments are checked against the target without running it, and the row is
-       routed: `rejected` if they do not fit or name a record the caller cannot read,
-       `awaiting_approval` if the declaration asks for an approval, `ready` otherwise. The subject's `version_number` is kept
+    5. the arguments are checked against the target without running it, and — for a live
+       request, as the principal it will execute as
+       (`c:AshAgent.ExecutionIdentity.precheck_actor/1`) — so is the action itself:
+       its changes and validations, and the principal's authority over exactly that
+       change (`AshAgent.Invocation.Target.precheck/3`), with no hooks run. The row is
+       then routed: `rejected` if the arguments do not fit, the action refuses the
+       request, or the principal is not permitted (`invalid_arguments`,
+       `invalid_request` or `not_permitted` as `error_code`, the per-field errors as
+       `rejection_details`), `awaiting_approval` if the declaration asks for an
+       approval, `ready` otherwise. The subject's `version_number` is kept
        as a precondition. The resolved target and the subject (the record an update or
        destroy acts on, else nil) are put in the changeset context under `:ash_agent`,
        for the host's own changes on `request`, which run after this one;
@@ -129,29 +136,83 @@ defmodule AshAgent.Invocation.Changes.Request do
   defp mode(_changeset, _lineage), do: {:ok, :live}
 
   defp route(changeset, target, mode, args, context) do
-    case Target.prepare(target, args, Ash.Context.to_opts(context, tenant: changeset.tenant)) do
-      {:ok, %{subject: subject}} ->
-        changeset
-        |> Ash.Changeset.force_change_attribute(
-          :preconditions,
-          Target.preconditions(target, subject)
-        )
-        |> Ash.Changeset.set_context(%{ash_agent: %{target: target, subject: subject}})
-        |> AshStateMachine.transition_state(first_state(target.effect, mode))
-        |> Ash.Changeset.force_change_attribute(
-          :approval_expires_at,
-          if(mode == :live, do: Approval.expires_at(target.effect, DateTime.utc_now()))
-        )
+    opts = Ash.Context.to_opts(context, tenant: changeset.tenant)
 
-      {:error, messages} ->
-        changeset
-        |> AshStateMachine.transition_state(:rejected)
-        |> Ash.Changeset.force_change_attributes(%{
-          failure_class: :rejected,
-          error_code: String.slice("invalid_arguments: " <> Enum.join(messages, "; "), 0, 256)
-        })
+    case Target.prepare(target, args, opts) do
+      {:ok, prepared} ->
+        case precheck(changeset, target, mode, prepared) do
+          {:ok, changeset} -> place(changeset, target, mode, prepared)
+          {:error, code, errors} -> reject(changeset, code, errors)
+        end
+
+      {:error, errors} ->
+        reject(changeset, :invalid_arguments, errors)
     end
   end
+
+  defp place(changeset, target, mode, prepared) do
+    changeset
+    |> Ash.Changeset.force_change_attribute(
+      :preconditions,
+      Target.preconditions(target, prepared.subject)
+    )
+    |> Ash.Changeset.set_context(%{ash_agent: %{target: target, subject: prepared.subject}})
+    |> AshStateMachine.transition_state(first_state(target.effect, mode))
+    |> Ash.Changeset.force_change_attribute(
+      :approval_expires_at,
+      if(mode == :live, do: Approval.expires_at(target.effect, DateTime.utc_now()))
+    )
+  end
+
+  # The pre-check: a live request is checked against the action itself, as the principal
+  # it will execute as, so what the action or the principal would refuse is refused
+  # before anyone is asked to approve it (`AshAgent.Invocation.Target.precheck/3`). A run
+  # that is not live never runs its target, so its action is not checked; a host that
+  # names no pre-check actor keeps the claim's checks as the first its requests face.
+  defp precheck(changeset, _target, mode, _prepared) when mode != :live, do: {:ok, changeset}
+
+  defp precheck(changeset, target, :live, prepared) do
+    identity = Info.execution_identity(changeset.resource)
+    principal = Ash.Changeset.get_attribute(changeset, :executing_principal)
+
+    if function_exported?(identity, :precheck_actor, 1) do
+      case identity.precheck_actor(principal) do
+        {:ok, actor} ->
+          case Target.precheck(target, prepared, actor: actor, tenant: changeset.tenant) do
+            :ok -> {:ok, changeset}
+            {:error, code, errors} -> {:error, code, errors}
+          end
+
+        # The host's word that the principal cannot act now; like a refused check, it
+        # says no more than that.
+        {:error, _reason} ->
+          {:error, :not_permitted, [%{message: "not permitted"}]}
+      end
+    else
+      {:ok, changeset}
+    end
+  end
+
+  defp reject(changeset, code, errors) do
+    changeset
+    |> AshStateMachine.transition_state(:rejected)
+    |> Ash.Changeset.force_change_attributes(%{
+      failure_class: :rejected,
+      error_code: error_code(code, errors),
+      rejection_details: %{"errors" => Enum.map(errors, &details/1)}
+    })
+  end
+
+  # The code names the check that refused; the per-field errors, stored as
+  # `rejection_details`, say what would fix it. Only the arguments' own messages follow
+  # their code, as they always have; a validation's or a state machine's prose stays in
+  # the details, and a refusal of permission says nothing else, to anyone.
+  defp error_code(:invalid_arguments, errors),
+    do: String.slice("invalid_arguments: #{Target.messages(errors)}", 0, 256)
+
+  defp error_code(code, _errors) when is_atom(code), do: Atom.to_string(code)
+
+  defp details(error), do: Map.new(error, fn {key, value} -> {to_string(key), value} end)
 
   # A row that will not run asks nobody to approve it; `approval_mode` still says it
   # would have.
