@@ -29,5 +29,6 @@ defmodule AshAgent.Test.Invocation do
     digest_key(AshAgent.Test.DigestKey)
     release_manifest(AshAgent.Test.ReleaseManifest)
     run(AshAgent.Test.Run)
+    authority(AshAgent.Test.Authority)
   end
 end

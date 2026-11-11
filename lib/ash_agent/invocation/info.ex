@@ -13,6 +13,11 @@ defmodule AshAgent.Invocation.Info do
   @spec digest_key(Ash.Resource.t() | Spark.Dsl.t()) :: module() | nil
   def digest_key(resource), do: Spark.Dsl.Extension.get_opt(resource, [:invocation], :digest_key)
 
+  @doc "The host's `AshAgent.Approval.Authority` implementation for `resource`."
+  @spec authority(Ash.Resource.t() | Spark.Dsl.t()) :: module() | nil
+  def authority(resource),
+    do: Spark.Dsl.Extension.get_opt(resource, [:invocation], :authority)
+
   @doc "The host's `AshAgent.ReleaseManifest` implementation for `resource`; nil when none."
   @spec release_manifest(Ash.Resource.t() | Spark.Dsl.t()) :: module() | nil
   def release_manifest(resource),

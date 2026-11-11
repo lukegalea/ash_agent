@@ -4,8 +4,9 @@
 defmodule AshAgent.Invocation.Verifiers.VerifyHost do
   @moduledoc """
   Checks that a resource including `AshAgent.Invocation` supplies what the fragment needs:
-  both host options of the `invocation` section, and, when it uses `AshOban`, triggers
-  named `:execute` and `:reconcile` that run the actions of the same names.
+  the host options of the `invocation` section (`execution_identity`, `digest_key` and
+  `authority`), and, when it uses `AshOban`, triggers named `:execute` and `:reconcile`
+  that run the actions of the same names.
   """
 
   use Spark.Dsl.Verifier
@@ -20,6 +21,7 @@ defmodule AshAgent.Invocation.Verifiers.VerifyHost do
     [
       option(dsl, :execution_identity, AshAgent.ExecutionIdentity),
       option(dsl, :digest_key, AshAgent.DigestKey),
+      option(dsl, :authority, AshAgent.Approval.Authority),
       trigger(dsl, :execute, "request enqueues it for every ready row"),
       trigger(dsl, :reconcile, "it settles rows whose lease expired or whose outcome is unknown")
     ]

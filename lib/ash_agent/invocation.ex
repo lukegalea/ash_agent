@@ -90,7 +90,11 @@ defmodule AshAgent.Invocation do
       ready only while it still binds the request: `request` records what it binds
       (`authorization_details` and their `approval_digest`, RFC 9396 and RFC 8785) and
       when it expires, and a changed subject, a changed target or an expired approval
-      makes the row `stale` instead.
+      makes the row `stale` instead. Which person may decide is the approval posture in
+      force (`AshAgent.Approval.Posture`, answered by `AshAgent.Approval.Authority`); an
+      approved row records what its approval rested on as `approval_basis`, and a
+      self-approval the posture no longer allows makes the row `stale` with
+      `error_code: "approved_by_requester"`, at the decision and again at every claim.
     * `provide_info` (update): returns a `request_info` row to `awaiting_approval` once
       the requester has answered, with a new approval window from the declaration's
       `approval_expires_in`. What is approved does not change: an amendment is a new
@@ -683,6 +687,18 @@ defmodule AshAgent.Invocation do
     end
 
     attribute :approved_by_id, :uuid, public?: true
+
+    attribute :approval_basis, :atom do
+      public? true
+      constraints one_of: AshAgent.Approval.Posture.bases()
+
+      description """
+      What the approval rested on: the declaration (`:confirm`, `:four_eyes`) or the
+      posture (`:small_team`, `:implementation`). Set when a decision is applied;
+      `AshAgent.Approval.Posture.basis/3` computes it from the posture and the approver.
+      """
+    end
+
     attribute :approval_expires_at, :utc_datetime_usec, public?: true
 
     # --- lease ---
