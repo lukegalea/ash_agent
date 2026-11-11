@@ -187,8 +187,10 @@ section, and read the posture the same way the package does: through the authori
 `set_approval_posture` answers who may change it: one administrator raises the posture; the sole administrator,
 an operator, or a change approved under four eyes lowers it; an `:implementation` posture needs an end date in
 the future and within 120 days, and every other posture clears the end date. The four-eyes path is a seam:
-declare the action as a governed target with `posture_floor?: true` and attach
-`AshAgent.Validations.Governed`, and reach it through `invoke` (`documentation/topics/approval-postures.md`).
+name your invocation resource as `invocation` in the `approval_posture` section, declare the action a four-eyes
+target with `posture_floor?: true`, and reach it through `invoke`; the validation verifies the invocation as
+`AshAgent.Validations.Governed` does. Do not attach `Governed` to the action, which would refuse the direct
+changes (`documentation/topics/approval-postures.md`). The fragment declares no primary key: your resource has one.
 
 ## `AshAgent.AgentVersion`
 

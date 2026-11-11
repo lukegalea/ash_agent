@@ -22,14 +22,20 @@ defmodule AshAgent.Approval.Validations.PostureChange do
         * the actor is the only person who has ever held the administrator role
           (`c:AshAgent.Approval.Authority.holders/2` returns exactly them);
         * the actor is an operator (`c:AshAgent.Approval.Authority.operator?/1`);
-        * the change arrives through an approved four-eyes invocation: the host
-          declares this action as a governed target with `posture_floor?: true`
-          and attaches `AshAgent.Validations.Governed`, and the validation sees
-          the invocation the executor names in the context
-          (`changeset.context.ash_agent.invocation_id`). That is the seam: the
-          marker alone means the host declared the action governed, so an
-          approval under four eyes — at the floor, under every posture — stands
-          behind the change.
+        * the change arrives through an approved four-eyes invocation. That is
+          the seam: the host names its invocation resource in the
+          `approval_posture` section and declares this action a four-eyes target
+          with `posture_floor?: true`, so its approval is four eyes under every
+          posture. The invocation the context names is then verified exactly as
+          `AshAgent.Validations.Governed` verifies one (`verify/3`): executing
+          under the lease its executor holds, for this action, these inputs and
+          this actor. A context is only what the caller says, so a marker that
+          does not verify counts for nothing.
+
+  A refusal is `AshAgent.Approval.PostureChangeRefused`. A request to lower the
+  posture through an invocation is not refused for it at request time, when the
+  approval it asks for does not exist yet (`AshAgent.Invocation.Target.precheck/3`);
+  the claim runs this validation again, with the approval in hand.
 
   The person deciding is the actor mapped through the host's
   `AshAgent.ExecutionIdentity` (`principal_of/1`): an automation principal or an
@@ -38,7 +44,8 @@ defmodule AshAgent.Approval.Validations.PostureChange do
 
   use Ash.Resource.Validation
 
-  alias AshAgent.Approval.{Info, Posture}
+  alias AshAgent.Approval.{Info, Posture, PostureChangeRefused}
+  alias AshAgent.Validations.Governed
 
   @postures Posture.postures()
   @rank %{standard: 2, small_team: 1, implementation: 0}
@@ -97,22 +104,17 @@ defmodule AshAgent.Approval.Validations.PostureChange do
 
     if loosened? do
       if operator?(changeset, context) or sole_administrator?(changeset, context) or
-           through_invocation?(changeset) do
+           through_invocation?(changeset, context) do
         :ok
       else
-        {:error,
-         field: :approval_posture,
-         message:
-           "a lower approval posture needs the sole administrator, an operator, " <>
-             "or a change approved under four eyes"}
+        {:error, PostureChangeRefused.exception(reason: :lowering)}
       end
     else
       if operator?(changeset, context) or administrator?(changeset, context) or
-           through_invocation?(changeset) do
+           through_invocation?(changeset, context) do
         :ok
       else
-        {:error,
-         field: :approval_posture, message: "a higher approval posture needs an administrator"}
+        {:error, PostureChangeRefused.exception(reason: :raising)}
       end
     end
   end
@@ -167,11 +169,20 @@ defmodule AshAgent.Approval.Validations.PostureChange do
     end
   end
 
-  # The seam: the executor of a governed invocation names it in the context
-  # (`AshAgent.Invocation.Executor.context/1`). The host declares the action a
-  # four-eyes target at the floor and attaches `AshAgent.Validations.Governed`,
-  # so a marker here stands behind an approval that was four eyes under every
-  # posture.
-  defp through_invocation?(changeset),
-    do: is_binary(get_in(changeset.context, [:ash_agent, :invocation_id]))
+  # The seam: an invocation the host's executor is running, verified as
+  # `Governed` verifies one, of an action the host declared four eyes at the
+  # floor, so the approval behind it was four eyes under every posture.
+  defp through_invocation?(changeset, context) do
+    invocation = Info.invocation(changeset.resource)
+
+    not is_nil(invocation) and floored_four_eyes?(changeset) and
+      Governed.verify(changeset, invocation, context.actor) == :ok
+  end
+
+  defp floored_four_eyes?(%{resource: resource, action: action}) do
+    match?(
+      %{approval: :four_eyes, posture_floor?: true},
+      AshAgent.Effects.Info.effect(resource, action.name)
+    )
+  end
 end

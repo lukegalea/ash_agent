@@ -67,13 +67,19 @@ defmodule AshAgent.EffectsTest do
                "idempotent" => true,
                "open_world" => true,
                "approval" => "four_eyes",
-               "posture_floor" => false,
                "approver_role" => "credentialing_committee",
                "approval_expires_in" => %{"days" => 3},
                "intent" => "execute",
                "reconcile_with" => "lookup_activation",
                "preconditions" => ["clinician_id"]
              }
+    end
+
+    test "to_map/1 names a posture floor only when one is declared, so other digests hold" do
+      floored = %{Info.effect(Credential, :activate) | posture_floor?: true}
+
+      assert Effect.to_map(floored)["posture_floor"] == true
+      refute Map.has_key?(Effect.to_map(Info.effect(Credential, :activate)), "posture_floor")
     end
   end
 

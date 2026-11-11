@@ -87,14 +87,19 @@ defmodule AshAgent.Effects.Effect do
       "idempotent" => effect.idempotent?,
       "open_world" => effect.open_world?,
       "approval" => Atom.to_string(effect.approval),
-      "posture_floor" => effect.posture_floor?,
       "approver_role" => atom_string(effect.approver_role),
       "approval_expires_in" => expires_in(effect.approval_expires_in),
       "intent" => atom_string(effect.intent),
       "reconcile_with" => atom_string(effect.reconcile_with),
       "preconditions" => Enum.map(effect.preconditions, &Atom.to_string/1)
     }
+    |> floor(effect)
   end
+
+  # Written only when set, so a declaration without a floor keeps the digest it had
+  # before floors existed, and approvals in flight when a host upgrades still bind.
+  defp floor(map, %{posture_floor?: true}), do: Map.put(map, "posture_floor", true)
+  defp floor(map, _effect), do: map
 
   defp atom_string(nil), do: nil
   defp atom_string(atom), do: Atom.to_string(atom)

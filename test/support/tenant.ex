@@ -18,8 +18,9 @@ defmodule AshAgent.Test.Tenant do
     repo AshAgent.Test.Repo
   end
 
-  # A host supplies its own timestamps.
+  # A host supplies its own primary key and timestamps.
   attributes do
+    uuid_primary_key :id
     create_timestamp :inserted_at, public?: true
   end
 

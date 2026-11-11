@@ -130,7 +130,7 @@ defmodule AshAgent.Approval.Posture do
   | `:four_eyes` | any, `posture_floor?` | any | the approver role | yes | `:four_eyes` |
   | `:four_eyes` | `:standard` | any | the approver role | yes | `:four_eyes` |
   | `:four_eyes` | `:small_team` | the role has holders | the approver role | only when the requester does not hold it | `:four_eyes` |
-  | `:four_eyes` | `:small_team` | the role has no holders | the administrators | no | `:small_team` |
+  | `:four_eyes` | `:small_team` | the role has no holders | the administrators | only when the requester is not a person | `:small_team` |
   | `:four_eyes` | `:implementation` | the requester is a person | the requester | no | `:implementation` |
   | `:four_eyes` | `:implementation` | the requester is not a person | the approver role | yes | `:four_eyes` |
 
@@ -180,7 +180,13 @@ defmodule AshAgent.Approval.Posture do
         basis: :four_eyes
       }
     else
-      %{candidates: :administrators, exclude_requester?: false, basis: :small_team}
+      # Any administrator, the requester included, unless the request is not a
+      # person's own: the person an automation acts for does not approve its request.
+      %{
+        candidates: :administrators,
+        exclude_requester?: not facts[:requester_is_person?],
+        basis: :small_team
+      }
     end
   end
 

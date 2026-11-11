@@ -16,4 +16,12 @@ defmodule AshAgent.Approval.Info do
   @spec execution_identity(Ash.Resource.t() | Spark.Dsl.t()) :: module() | nil
   def execution_identity(resource),
     do: Spark.Dsl.Extension.get_opt(resource, [:approval_posture], :execution_identity)
+
+  @doc """
+  The host's resource that includes `AshAgent.Invocation`, through which a posture
+  change approved under four eyes arrives, or `nil` when the host names none.
+  """
+  @spec invocation(Ash.Resource.t() | Spark.Dsl.t()) :: module() | nil
+  def invocation(resource),
+    do: Spark.Dsl.Extension.get_opt(resource, [:approval_posture], :invocation)
 end

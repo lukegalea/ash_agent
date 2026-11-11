@@ -49,7 +49,7 @@ defmodule AshAgent.Approval.PostureFragment do
 
   ## What the fragment does not declare
 
-  Tenancy, policies, encryption and the `postgres` block; the host supplies
+  A primary key, tenancy, policies, encryption and the `postgres` block; the host supplies
   them, as it does for the other fragments. The posture is read through
   `c:AshAgent.Approval.Authority.posture/1`, which the host implements over this
   row or over wherever else it keeps it.
@@ -71,8 +71,6 @@ defmodule AshAgent.Approval.PostureFragment do
   end
 
   attributes do
-    uuid_primary_key :id
-
     attribute :approval_posture, :atom do
       allow_nil? false
       public? true

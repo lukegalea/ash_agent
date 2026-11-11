@@ -60,14 +60,20 @@ defmodule AshAgent.Approval.PostureFragmentTest do
              ).approval_posture == :implementation
     end
 
-    test "is allowed through an approved four-eyes change (the seam)", %{
+    test "is not allowed by a context that only names an invocation", %{
       tenant: tenant,
       admin: admin
     } do
-      assert set!(tenant, %{approval_posture: :small_team},
-               actor: admin,
-               context: %{ash_agent: %{invocation_id: Ash.UUID.generate()}}
-             ).approval_posture == :small_team
+      # A context is only what the caller says; this tenant names no invocation
+      # resource, so nothing could verify it anyway.
+      assert {:error, %Ash.Error.Invalid{errors: errors}} =
+               set(tenant, %{approval_posture: :small_team},
+                 actor: admin,
+                 context: %{ash_agent: %{invocation_id: Ash.UUID.generate(), lease_epoch: 1}}
+               )
+
+      assert [%AshAgent.Approval.PostureChangeRefused{reason: :lowering}] = errors
+      assert Domain.get_tenant!(tenant.id).approval_posture == :standard
     end
 
     test "is refused for a person who is not an administrator", %{

@@ -69,9 +69,14 @@ action, `set_approval_posture`, whose validation answers who may change them:
 * an `:implementation` needs an end date in the future and within 120 days; every other posture clears it;
 * raising the posture (towards `:standard`) is the work of one administrator;
 * lowering it needs the sole administrator (the only person who has ever held the administrator role), an
-  operator, or a change approved under four eyes — the host declares the action a governed target with
-  `posture_floor?: true` and attaches `AshAgent.Validations.Governed`, and the validation accepts the change
-  because it arrived through that invocation.
+  operator, or a change approved under four eyes. For the last, the host names its invocation resource in the
+  `approval_posture` section (`invocation`) and declares `set_approval_posture` a four-eyes target with
+  `posture_floor?: true`. The validation then verifies the invocation the context names exactly as
+  `AshAgent.Validations.Governed` does: executing under its executor's lease, for this action, these inputs and
+  this actor. A context that only names an invocation counts for nothing. Do not attach `Governed` itself to
+  `set_approval_posture`: it would refuse the sole administrator's and an operator's direct changes.
+* a refusal is `AshAgent.Approval.PostureChangeRefused`. A request to lower the posture through `invoke` is not
+  refused for it at request time, before its approval exists; the claim checks it again, approval in hand.
 
 Policies stay with the host: the validation is the rule about the change itself, asked of the actor the host's
 policies already let through.

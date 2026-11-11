@@ -83,6 +83,12 @@ defmodule AshAgent.Test.Domain do
       define :set_approval_posture, action: :set_approval_posture
     end
 
+    resource AshAgent.Test.GovernedTenant do
+      define :create_governed_tenant, action: :create
+      define :get_governed_tenant, action: :read, get_by: [:id]
+      define :set_governed_posture, action: :set_approval_posture
+    end
+
     resource AshAgent.Test.Spike.ReferralJob do
       define :enqueue_referral, action: :enqueue, args: [:label]
       define :claim_referral, action: :claim

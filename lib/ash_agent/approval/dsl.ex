@@ -29,6 +29,16 @@ defmodule AshAgent.Approval.Dsl do
         The module implementing `AshAgent.ExecutionIdentity` for the host, whose
         `principal_of/1` maps the actor of a posture change to the person deciding it.
         """
+      ],
+      invocation: [
+        type: :atom,
+        doc: """
+        The host's resource that includes `AshAgent.Invocation`. Optional: name it, and
+        declare `set_approval_posture` a four-eyes target with `posture_floor?: true`, to
+        let a posture be lowered through an approved invocation. Without it a change
+        approved that way is not recognized, and only the sole administrator or an
+        operator may lower the posture.
+        """
       ]
     ]
   }
@@ -38,7 +48,8 @@ defmodule AshAgent.Approval.Dsl do
   `AshAgent.Approval.PostureFragment` fragment. The fragment brings this extension
   with it.
 
-  Both options are required, and checked when the resource compiles.
+  `authority` and `execution_identity` are required, and checked when the resource
+  compiles; `invocation` is optional.
 
   #{Spark.Dsl.Extension.doc_index([@section])}
 
