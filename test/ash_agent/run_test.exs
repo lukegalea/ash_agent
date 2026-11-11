@@ -354,6 +354,44 @@ defmodule AshAgent.RunTest do
                ])
     end
 
+    test "a tool call refused at request time answers the model with what would fix it",
+         %{nurse: nurse} do
+      ScriptedModel.script!([
+        {:tools,
+         [
+           {"call_bad", @record, %{"input" => %{"licence_number" => "RN-1", "shoe_size" => 9}}}
+         ]},
+        {:text, ~s({"recorded": 0})}
+      ])
+
+      run = start!(nurse)
+
+      # The invocation is requested and refused in the same step: no approval waits.
+      assert {:ok, :waiting} = step(run)
+
+      [row] = invocations(run)
+      assert {row.status, row.failure_class} == {:rejected, :rejected}
+      assert row.error_code =~ "shoe_size is not an input"
+
+      # Its next model turn reads the field and the message.
+      assert {:ok, :completed} = step(run)
+
+      [_first, second] = ScriptedModel.requests()
+      [tool] = for(%{role: :tool} = message <- second.messages, do: message)
+      assert tool.tool_call_id == "call_bad"
+
+      assert Jason.decode!(text(tool)) == %{
+               "error" => "not run: rejected",
+               "code" => row.error_code,
+               "errors" => [
+                 %{
+                   "path" => "shoe_size",
+                   "message" => "shoe_size is not an input of record"
+                 }
+               ]
+             }
+    end
+
     test "a governed call is an invocation the run waits for; its recorded result is what the model reads",
          %{nurse: nurse} do
       ScriptedModel.script!([
