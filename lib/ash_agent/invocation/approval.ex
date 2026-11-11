@@ -33,6 +33,7 @@ defmodule AshAgent.Invocation.Approval do
   approval granted for one request never runs a different one.
   """
 
+  alias AshAgent.Approval.Posture
   alias AshAgent.Digest
   alias AshAgent.Invocation.{Info, Target}
 
@@ -65,6 +66,98 @@ defmodule AshAgent.Invocation.Approval do
   @doc "SHA-256 of the canonical JSON of `details`, as lowercase hex: the `approval_digest`."
   @spec digest([map()]) :: String.t()
   def digest(details), do: Digest.sha256_hex(details)
+
+  @doc """
+  The approval rule for `invocation`'s target under the posture in force in
+  `opts[:tenant]`: `Posture.rule/3` with the facts gathered from the row's
+  executing principal and the host's `Authority`.
+
+  The posture is asked only of a `:four_eyes` target; `:none` and `:confirm`
+  are the same under every posture, so the host is not asked. The role's
+  holders are asked only under `:small_team`, the only rule that reads them. A
+  host naming no authority (which the `invocation` section's verifier refuses)
+  is answered as `:standard`.
+  """
+  @spec rule(Ash.Resource.record(), keyword()) :: Posture.rule()
+  def rule(invocation, opts \\ []) do
+    effect = invocation.effects || %{}
+
+    if invocation.approval_mode == :four_eyes do
+      now = Keyword.get_lazy(opts, :now, &DateTime.utc_now/0)
+      authority = Info.authority(invocation.__struct__)
+      {posture, ends_at} = posture(authority, opts)
+      effective = Posture.effective(posture, ends_at, now)
+
+      Posture.rule(
+        effective,
+        effect,
+        facts(effective, authority, invocation, opts)
+      )
+    else
+      Posture.rule(:standard, effect, %{})
+    end
+  end
+
+  @doc """
+  What an approval of `invocation` decided by `approver_id` rests on: `rule/2`
+  under `opts[:tenant]`, refined by `Posture.basis/3`.
+  """
+  @spec basis(Ash.Resource.record(), String.t() | nil, keyword()) :: Posture.basis() | nil
+  def basis(invocation, approver_id, opts \\ []) do
+    invocation
+    |> rule(opts)
+    |> Posture.basis(approver_id, requester_person(invocation))
+  end
+
+  # The posture the host answers, and the facts its rule reads. Both are asked
+  # with the row's tenant and no actor: facts about people, not authority.
+  defp posture(nil, _opts), do: {:standard, nil}
+
+  defp posture(authority, opts),
+    do: authority.posture(opts[:tenant])
+
+  # Only `:small_team` reads who holds the approver role; every other posture
+  # reads whether the requester is a person alone.
+  defp facts(:small_team, authority, invocation, opts) do
+    requester = requester_person(invocation)
+    holders = holders(authority, opts, invocation.effects)
+
+    %{
+      requester_is_person?: person?(invocation),
+      requester_holds_role?: is_binary(requester) and requester in holders,
+      role_has_holders?: holders != []
+    }
+  end
+
+  defp facts(_posture, _authority, invocation, _opts),
+    do: %{requester_is_person?: person?(invocation)}
+
+  defp holders(nil, _opts, _effects), do: []
+
+  defp holders(authority, opts, effects) do
+    case effects do
+      %{approver_role: role} when is_atom(role) ->
+        authority.holders(opts[:tenant], role)
+
+      %{"approver_role" => role} when is_binary(role) ->
+        authority.holders(opts[:tenant], String.to_existing_atom(role))
+
+      _no_role ->
+        []
+    end
+  end
+
+  # The person the request serves: the principal itself when a person, else the
+  # person an automation acts for, else nobody.
+  defp requester_person(%{executing_principal: principal}), do: requester_person(principal)
+
+  defp requester_person(%{type: :person, id: id}) when is_binary(id), do: id
+  defp requester_person(%{type: :automation, on_behalf_of: id}) when is_binary(id), do: id
+  defp requester_person(_principal), do: nil
+
+  defp person?(%{executing_principal: principal}), do: person?(principal)
+  defp person?(%{type: :person}), do: true
+  defp person?(_principal), do: false
 
   @doc """
   When an approval requested at `now` for `effect` expires, or nil when it does not.
@@ -104,6 +197,13 @@ defmodule AshAgent.Invocation.Approval do
     * `"approval_changed"`: anything else the digest covers differs from what was
       approved, such as an `authorization_details` that is not the one digested.
 
+    * `"approved_by_requester"`: the approval was the requester's own, and the
+      posture in force no longer allows that (raised to `:standard`, or an
+      `:implementation` that ended). The posture is asked of a `:four_eyes`
+      target only, with `opts[:approver]` as the person deciding: the
+      `decided_by_id` of an arriving decision, and at a claim the row's
+      `approved_by_id`.
+
   The preconditions' records are read without authorization, in `opts[:tenant]`: this is
   the machinery checking what was approved, not a person reading.
   """
@@ -136,6 +236,9 @@ defmodule AshAgent.Invocation.Approval do
             invocation.approval_digest ->
           "approval_changed"
 
+        excluded_requester?(invocation, opts, now) ->
+          "approved_by_requester"
+
         true ->
           nil
       end
@@ -146,6 +249,20 @@ defmodule AshAgent.Invocation.Approval do
     do: DateTime.compare(at, now) != :gt
 
   defp expired?(_invocation, _now), do: false
+
+  # A self-approval the posture in force no longer allows: the person deciding
+  # is the person the request serves, and the rule in force now excludes them.
+  # Only the rule's `exclude_requester?` edge is read, which no role fact
+  # changes.
+  defp excluded_requester?(%{approval_mode: :four_eyes} = invocation, opts, now) do
+    approver = Keyword.get(opts, :approver, invocation.approved_by_id)
+    rule = rule(invocation, Keyword.put(opts, :now, now))
+
+    rule.exclude_requester? and is_binary(approver) and
+      approver == requester_person(invocation)
+  end
+
+  defp excluded_requester?(_invocation, _opts, _now), do: false
 
   defp current_target_digest(invocation) do
     case Target.resolve(invocation.target) do

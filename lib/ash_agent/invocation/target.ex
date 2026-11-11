@@ -196,14 +196,27 @@ defmodule AshAgent.Invocation.Target do
        do: check(Ash.ActionInput.for_action(resource, name, inputs, opts))
 
   # The ungoverned refusal is the action guarding its own door: at request time no
-  # invocation exists to satisfy it, and at execution one will. Every other error the
-  # build made is the request's.
+  # invocation exists to satisfy it, and at execution one will. So is a posture change
+  # refused for want of the approval a four-eyes target at the floor is asking for
+  # (`AshAgent.Approval.Validations.PostureChange`); the claim checks it again with the
+  # approval in hand. Every other error the build made is the request's.
   defp check(built) do
-    errors = Enum.reject(built.errors, &(&1.__struct__ == Ungoverned))
+    awaited = awaited_refusals(built)
+    errors = Enum.reject(built.errors, &(&1.__struct__ in awaited))
 
     if errors == [],
       do: built,
       else: {:error, field_errors(errors)}
+  end
+
+  defp awaited_refusals(%{resource: resource, action: action}) do
+    case AshAgent.Effects.Info.effect(resource, action.name) do
+      %{approval: :four_eyes, posture_floor?: true} ->
+        [Ungoverned, AshAgent.Approval.PostureChangeRefused]
+
+      _other ->
+        [Ungoverned]
+    end
   end
 
   defp field_errors(errors),

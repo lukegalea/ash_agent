@@ -37,6 +37,7 @@ defmodule AshAgent.Effects.Verifiers.VerifyDeclarations do
     [
       read_only(effect, action),
       approval(effect),
+      posture_floor(effect),
       reconcile_with(effect, dsl),
       preconditions(effect, action)
     ]
@@ -63,6 +64,14 @@ defmodule AshAgent.Effects.Verifiers.VerifyDeclarations do
   end
 
   defp approval(_effect), do: []
+
+  defp posture_floor(%Effect{posture_floor?: true, approval: :four_eyes}), do: []
+
+  defp posture_floor(%Effect{posture_floor?: true} = effect),
+    do:
+      "declares #{inspect(effect.name)} posture_floor?: true, which is accepted only with approval: :four_eyes"
+
+  defp posture_floor(_effect), do: []
 
   defp reconcile_with(%Effect{reconcile_with: nil}, _dsl), do: []
 

@@ -38,9 +38,10 @@ its own resources and supplies everything that depends on the application:
 - policies;
 - ash_oban triggers, and therefore the workers, queues and schedules;
 - audit and encryption at rest;
-- implementations of the package's behaviours: who an invocation or a run executes as, the key an argument digest is
-  taken under, how a run's step reaches a model, and where an execution's history is read from
-  (`AshAgent.Execution.Source`); later, how an approval is opened and read.
+- implementations of the package's behaviours: who an invocation or a run executes as, the key an argument
+  digest is taken under, how a run's step reaches a model, where an execution's history is read from
+  (`AshAgent.Execution.Source`), and the facts about its people that answer who may approve
+  (`AshAgent.Approval.Authority`).
 
 See [What the host supplies](documentation/topics/what-the-host-supplies.md).
 

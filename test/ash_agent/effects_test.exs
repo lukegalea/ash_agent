@@ -74,6 +74,13 @@ defmodule AshAgent.EffectsTest do
                "preconditions" => ["clinician_id"]
              }
     end
+
+    test "to_map/1 names a posture floor only when one is declared, so other digests hold" do
+      floored = %{Info.effect(Credential, :activate) | posture_floor?: true}
+
+      assert Effect.to_map(floored)["posture_floor"] == true
+      refute Map.has_key?(Effect.to_map(Info.effect(Credential, :activate)), "posture_floor")
+    end
   end
 
   describe "compile-time verification" do
@@ -201,6 +208,30 @@ defmodule AshAgent.EffectsTest do
         end
 
       assert error.message =~ "approval: :four_eyes without an approver_role"
+    end
+
+    test "a posture floor is accepted only on a four-eyes approval" do
+      error =
+        assert_dsl_error %DslError{path: [:effects, :action, :suspend]} do
+          defmodule Elixir.AshAgent.EffectsTest.FloorOnConfirm do
+            use Ash.Resource, domain: nil, extensions: [AshAgent.Effects]
+
+            effects do
+              action :suspend, kind: :edit, approval: :confirm, posture_floor?: true
+            end
+
+            actions do
+              update :suspend
+            end
+
+            attributes do
+              uuid_primary_key :id
+            end
+          end
+        end
+
+      assert error.message =~
+               "posture_floor?: true, which is accepted only with approval: :four_eyes"
     end
 
     test "an approver role or expiry without an approval fails compilation" do

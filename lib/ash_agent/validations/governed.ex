@@ -63,12 +63,21 @@ defmodule AshAgent.Validations.Governed do
   def temporal_safe?(_opts), do: true
 
   @impl true
-  def validate(subject, opts, context), do: check(subject, opts[:invocation], context.actor)
+  def validate(subject, opts, context), do: verify(subject, opts[:invocation], context.actor)
 
   @impl true
-  def atomic(changeset, opts, context), do: check(changeset, opts[:invocation], context.actor)
+  def atomic(changeset, opts, context), do: verify(changeset, opts[:invocation], context.actor)
 
-  defp check(subject, resource, actor) do
+  @doc """
+  The checks this validation makes, for code that must know whether `subject` is being
+  run by its own invocation of `resource` (the host's resource that includes
+  `AshAgent.Invocation`), as `actor`: `:ok`, or `{:error, %AshAgent.Invocation.Ungoverned{}}`
+  naming the check that failed. `AshAgent.Approval.Validations.PostureChange` asks it to
+  trust a posture change that arrives through an approved invocation.
+  """
+  @spec verify(Ash.Changeset.t() | Ash.ActionInput.t(), module(), term()) ::
+          :ok | {:error, Exception.t()}
+  def verify(subject, resource, actor) do
     target = Target.name(subject.resource, subject.action.name)
 
     with {:ok, id, epoch} <- named(subject),

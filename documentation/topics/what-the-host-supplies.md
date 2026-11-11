@@ -17,7 +17,8 @@ runs are built.
 | Executing principal | A behaviour asking who an invocation or a run executes as, who prechecks a request as its principal, who may start an agent and who requests a run's tool calls (`AshAgent.ExecutionIdentity`) | An implementation built from the host's own grants. Without `precheck_actor/1` a live request is not prechecked; implement it and the request is checked against the action and the principal's authority before anyone is asked to approve it |
 | Models | A behaviour asking which model and transport a run's step calls (`AshAgent.Runtime`) | An implementation over its own model profiles and call records |
 | Argument digests | HMAC-SHA256 over canonical JSON (`AshAgent.Digest`) | The key, through `AshAgent.DigestKey` |
-| Approvals | A behaviour for opening an approval and reading its decision, and the state that waits for it | An implementation over the host's approval mechanism |
+| Approvals | The binding (`authorization_details`, digests), the state that waits for a decision, and which person decides (`AshAgent.Approval.Posture`) | An implementation over the host's approval mechanism, attached as changes to `request` and `apply_decision` |
+| Approval postures | The rule: `AshAgent.Approval.Posture`, the `approval_basis` each approval records, and `AshAgent.Approval.PostureFragment` for the tenant row | Facts about its people through `AshAgent.Approval.Authority` (named `authority` in the `invocation` section): the posture in force, who holds or has ever held a role, its administrator role, its platform operators |
 | Tenancy | None. Actions never read a tenant themselves | A `multitenancy` block, usually through its base resource |
 | Policies | None | All of them |
 | Triggers and workers | The trigger names the actions expect (`:execute`, `:reconcile`, `:step`, `:recover`), and a template in `usage-rules.md` | The `oban` blocks: worker and scheduler modules, queues, schedules, the default actor |

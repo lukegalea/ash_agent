@@ -6,13 +6,15 @@ defmodule AshAgent.Invocation.Dsl do
     name: :invocation,
     describe: """
     What the host supplies to the `AshAgent.Invocation` fragment: who an invocation runs as, the key its
-    argument digest is taken under, and how often a transiently failing row is tried.
+    argument digest is taken under, who decides its approvals, and how often a transiently failing row
+    is tried.
     """,
     examples: [
       """
       invocation do
         execution_identity MyClinic.ExecutionIdentity
         digest_key MyClinic.InvocationDigestKey
+        authority MyClinic.ApprovalAuthority
       end
       """
     ],
@@ -24,6 +26,13 @@ defmodule AshAgent.Invocation.Dsl do
       digest_key: [
         type: {:behaviour, AshAgent.DigestKey},
         doc: "The module implementing `AshAgent.DigestKey` for this resource."
+      ],
+      authority: [
+        type: {:behaviour, AshAgent.Approval.Authority},
+        doc: """
+        The module implementing `AshAgent.Approval.Authority` for this resource: the approval
+        posture in force, the holders of the host's roles, and its platform operators.
+        """
       ],
       release_manifest: [
         type: {:behaviour, AshAgent.ReleaseManifest},
@@ -56,8 +65,8 @@ defmodule AshAgent.Invocation.Dsl do
   The `invocation` section a host fills on a resource that includes the
   `AshAgent.Invocation` fragment. The fragment brings this extension with it.
 
-  `execution_identity` and `digest_key` are required, and checked when the resource
-  compiles. A resource that also uses `AshOban` must declare a trigger named `:execute`
+  `execution_identity`, `digest_key` and `authority` are required, and checked when the
+  resource compiles. A resource that also uses `AshOban` must declare a trigger named `:execute`
   running the `:execute` action, because `request` and `apply_decision` enqueue it for
   every row they make ready, and a trigger named `:reconcile` running the `:reconcile`
   action, because nothing else settles a row whose lease expired or whose outcome is

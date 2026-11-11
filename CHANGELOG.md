@@ -16,6 +16,29 @@ Nothing has been released yet.
 
 Requires Elixir 1.20 or later.
 
+### Breaking changes:
+
+- Approval postures (`AshAgent.Approval.Posture`): which person decides an approval is now the package's rule,
+  so small organizations, and organizations being set up, do not need a second person for every act. Hosts name
+  an `AshAgent.Approval.Authority` implementation as `authority` in the `invocation` section (required, checked
+  at compile time): the posture in force, the holders of the host's roles, its administrator role, and its
+  platform operators. Every approved row records `approval_basis` (`:confirm`, `:four_eyes`, `:small_team`,
+  `:implementation`), a new attribute on the invocation fragment: hosts generate a migration for the column.
+- The effects declaration takes `posture_floor?` (accepted only with `approval: :four_eyes`): the effect keeps
+  `:standard` behaviour under every posture, and the option is part of the row's effects snapshot, so an
+  approval binds it. The snapshot names it only when it is set, so the target digest of every declaration
+  without a floor is unchanged, and approvals in flight when a host upgrades still bind.
+- `AshAgent.Invocation.Approval.stale_reason/2` re-asks the posture, wherever it is asked: a self-approval the
+  posture in force no longer allows (raised to `:standard`, or an `:implementation` that ended) makes the row
+  `stale` with `error_code: "approved_by_requester"`, at the decision and again at every claim.
+- `AshAgent.Approval.PostureFragment`, for the host's tenant resource: the posture and its end date, and
+  `set_approval_posture`, whose validation answers who may change them (one administrator raises; the sole
+  administrator, an operator, or an approved four-eyes change lowers; an `:implementation` needs an end date
+  within 120 days). The fragment declares no primary key. The four-eyes path needs the host's invocation
+  resource named as `invocation` in the fragment's `approval_posture` section; the validation verifies the
+  invocation as `AshAgent.Validations.Governed` does, now public as `Governed.verify/3`. A refusal is
+  `AshAgent.Approval.PostureChangeRefused`, which a request through `invoke` does not meet at request time.
+
 ### Features:
 
 - Request-time pre-check. A live request that fits its target's inputs is then checked against the action itself, as

@@ -29,6 +29,7 @@ defmodule AshAgent.Effects.Effect do
     idempotent?: false,
     open_world?: true,
     approval: :none,
+    posture_floor?: false,
     preconditions: [],
     __identifier__: nil,
     __spark_metadata__: nil
@@ -54,6 +55,7 @@ defmodule AshAgent.Effects.Effect do
           idempotent?: boolean(),
           open_world?: boolean(),
           approval: :none | :confirm | :four_eyes,
+          posture_floor?: boolean(),
           approver_role: atom() | nil,
           approval_expires_in: keyword() | nil,
           intent: :inspect | :propose | :approve | :test | :execute | nil,
@@ -91,7 +93,13 @@ defmodule AshAgent.Effects.Effect do
       "reconcile_with" => atom_string(effect.reconcile_with),
       "preconditions" => Enum.map(effect.preconditions, &Atom.to_string/1)
     }
+    |> floor(effect)
   end
+
+  # Written only when set, so a declaration without a floor keeps the digest it had
+  # before floors existed, and approvals in flight when a host upgrades still bind.
+  defp floor(map, %{posture_floor?: true}), do: Map.put(map, "posture_floor", true)
+  defp floor(map, _effect), do: map
 
   defp atom_string(nil), do: nil
   defp atom_string(atom), do: Atom.to_string(atom)

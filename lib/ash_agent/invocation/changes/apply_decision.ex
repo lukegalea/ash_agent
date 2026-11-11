@@ -12,10 +12,12 @@ defmodule AshAgent.Invocation.Changes.ApplyDecision do
   know how approvals are made.
 
     * `:approved`: if the approval still holds (`AshAgent.Invocation.Approval.stale_reason/2`:
-      not expired, and the digest recomputed from the row, the target as declared now and
-      the preconditions' records as they stand now equals `approval_digest`), the row
-      becomes `ready`, records who approved it, and its `:execute` job is enqueued in the
-      same transaction. Otherwise it becomes `stale`, with the reason as `error_code`;
+      not expired, the digest recomputed from the row, the target as declared now and
+      the preconditions' records as they stand now equal to `approval_digest`, and the
+      posture in force still allowing whoever is deciding), the row becomes `ready`,
+      records who approved it and what the approval rested on, and its `:execute` job
+      is enqueued in the same transaction. Otherwise it becomes `stale`, with the
+      reason as `error_code`;
     * `:rejected`: the row becomes `rejected`, with `failure_class: :rejected`;
     * `:stale`: the row becomes `stale`: what was approved is no longer what would run;
     * `:request_info`: the approver asked the requester for more information before
@@ -24,6 +26,16 @@ defmodule AshAgent.Invocation.Changes.ApplyDecision do
       only through a later approval.
 
   With no outcome the update is refused, so it writes nothing.
+
+  ## `approval_basis`
+
+  What an approval rested on — `:confirm`, `:four_eyes`, `:small_team` or
+  `:implementation` — is computed here from the posture in force and the approver,
+  not carried by the host's decision: who may decide is the package's rule
+  (`AshAgent.Approval.Posture`, read through `AshAgent.Invocation.Approval.rule/2`),
+  so the row records what that rule says the approval rested on, whoever reports
+  the decision. A host that wants the basis on a decision of its own reads the
+  same functions.
   """
 
   use Ash.Resource.Change
@@ -40,12 +52,19 @@ defmodule AshAgent.Invocation.Changes.ApplyDecision do
   defp apply_outcome(changeset) do
     case Ash.Changeset.get_argument(changeset, :outcome) do
       :approved ->
-        case Approval.stale_reason(changeset.data, tenant: changeset.tenant) do
+        decided_by_id = Ash.Changeset.get_argument(changeset, :decided_by_id)
+
+        case Approval.stale_reason(changeset.data,
+               tenant: changeset.tenant,
+               approver: decided_by_id
+             ) do
           nil ->
             changeset
             |> AshStateMachine.transition_state(:ready)
             |> Ash.Changeset.force_change_attributes(%{
-              approved_by_id: Ash.Changeset.get_argument(changeset, :decided_by_id),
+              approved_by_id: decided_by_id,
+              approval_basis:
+                Approval.basis(changeset.data, decided_by_id, tenant: changeset.tenant),
               next_attempt_at: nil
             })
 
