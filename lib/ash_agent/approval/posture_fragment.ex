@@ -38,14 +38,20 @@ defmodule AshAgent.Approval.PostureFragment do
     * raising the posture (towards `:standard`) is the work of one
       administrator; lowering it needs the sole administrator, an operator, or a
       change approved under four eyes.
+    * the `Authority` is asked about the tenant this row itself names — the
+      value of the resource's `tenant_attribute` (its primary key, when that is
+      a single attribute) — never a tenant the caller passes.
 
-  The four-eyes path is a seam: declare this action as a governed target of its
-  own — an effects declaration with `approval: :four_eyes, approver_role: <the
-  administrators>, posture_floor?: true`, reached through `invoke`, and
-  `validate {AshAgent.Validations.Governed, invocation: MyClinic.Invocation}` on
-  the action — and the validation accepts the change, because the approval
-  behind it was four eyes under every posture. A host that reaches the action
-  another way relies on its policies alone.
+  The four-eyes path is a seam: name the host's invocation resource in the
+  `approval_posture` section (`invocation`) and declare this action a four-eyes
+  target with `posture_floor?: true`, reached through `invoke` — the validation
+  verifies the invocation the context names (`through_invocation?`, via
+  `AshAgent.Validations.Governed.verify/3`) and accepts the change, because the
+  approval behind it was four eyes under every posture. Do not attach
+  `AshAgent.Validations.Governed` to the action: it would refuse the sole
+  administrator's and an operator's direct changes, which this validation
+  allows. A host that reaches the action another way relies on its policies
+  alone.
 
   ## What the fragment does not declare
 
