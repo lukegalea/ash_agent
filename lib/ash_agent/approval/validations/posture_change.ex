@@ -8,6 +8,13 @@ defmodule AshAgent.Approval.Validations.PostureChange do
   needs. Policies stay with the host: this is the rule about the change itself,
   asked of the actor the host's policies already let through.
 
+  The host's `AshAgent.Approval.Authority` is asked about the tenant whose
+  posture is changing: the value of the resource's `tenant_attribute`
+  (`AshAgent.Approval.Dsl`; the primary key, when it is a single attribute) on
+  the row the changeset acts on. A tenant the caller passes is never asked
+  about, so an administrator of another tenant who passes their own is not
+  answered as this one's, and a lone administrator need pass none.
+
     * **The end date.** `:implementation` requires an end date in the future and
       at most `AshAgent.Approval.Posture.max_implementation_days/0` days out.
       Every other posture clears it (the action's change does); a date supplied
@@ -136,22 +143,31 @@ defmodule AshAgent.Approval.Validations.PostureChange do
 
   defp administrator?(changeset, context) do
     person_id = person_id(changeset, context)
-    person_id != nil and person_id in administrators(changeset, context)
+    person_id != nil and person_id in administrators(changeset)
   end
 
   defp sole_administrator?(changeset, context) do
     person_id = person_id(changeset, context)
 
-    person_id != nil and administrators(changeset, context) == [person_id]
+    person_id != nil and administrators(changeset) == [person_id]
   end
 
-  defp administrators(changeset, context) do
+  defp administrators(changeset) do
     case Info.authority(changeset.resource) do
       nil ->
         []
 
       authority ->
-        authority.holders(context.tenant, authority.administrator_role())
+        authority.holders(tenant(changeset), authority.administrator_role())
+    end
+  end
+
+  # The tenant whose posture is changing: read from the row the changeset acts
+  # on, never from a tenant the caller passes.
+  defp tenant(changeset) do
+    case Info.tenant_attribute(changeset.resource) do
+      nil -> nil
+      attribute -> Map.get(changeset.data, attribute)
     end
   end
 

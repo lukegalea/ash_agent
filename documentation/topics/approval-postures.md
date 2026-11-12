@@ -66,6 +66,10 @@ approval binds it.
 `AshAgent.Approval.PostureFragment` goes on the host's tenant resource: the posture and its end date, and one
 action, `set_approval_posture`, whose validation answers who may change them:
 
+The `Authority` is asked about the tenant the row itself names: the value of `tenant_attribute` in the
+`approval_posture` section — the resource's primary key, when that is a single attribute and the host names
+nothing — never a tenant the caller passes.
+
 * an `:implementation` needs an end date in the future and within 120 days; every other posture clears it;
 * raising the posture (towards `:standard`) is the work of one administrator;
 * lowering it needs the sole administrator (the only person who has ever held the administrator role), an

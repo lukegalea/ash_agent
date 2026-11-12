@@ -38,9 +38,10 @@ defmodule AshAgent.Approval.Authority do
     * `operator?/1` names a platform-level operator: one who may set any
       tenant's posture, because the platform, not the tenant, vouches for them.
 
-  Each is called with the tenant the invocation (or tenant record) carries, and
-  no actor: these are facts about people, not authority checks. Who may call the
-  actions that use them is the host's policies.
+  Each is called with the tenant in question and no actor: for an approval, the
+  tenant the invocation carries; for a posture change, the value of the row's
+  `tenant_attribute`. These are facts about people, not authority checks. Who
+  may call the actions that use them is the host's policies.
   """
 
   @typedoc "A person, as the host identifies them: the id of a person principal."
