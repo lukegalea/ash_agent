@@ -39,6 +39,22 @@ Requires Elixir 1.20 or later.
   invocation as `AshAgent.Validations.Governed` does, now public as `Governed.verify/3`. A refusal is
   `AshAgent.Approval.PostureChangeRefused`, which a request through `invoke` does not meet at request time.
 
+
+### Fixes:
+
+- `approval_posture` takes `tenant_attribute`: the attribute of the row whose value is the tenant its
+  `AshAgent.Approval.Authority` is asked about for a posture change, defaulting to the resource's primary key
+  when that is a single attribute (a resource without one names an attribute; the compile-time check refuses a
+  name that is not an attribute). `AshAgent.Approval.Validations.PostureChange` now asks the authority about that
+  attribute's value on the row being changed, never a tenant the caller passes: a lone administrator may change
+  their organization's posture without passing a tenant, and an administrator of another tenant who passes their
+  own is no longer answered as this row's administrator.
+- `AshAgent.Approval.PostureFragment`'s documentation no longer tells a host to attach
+  `AshAgent.Validations.Governed` to `set_approval_posture` for the four-eyes path. The path is the fragment's
+  own: name the invocation resource as `invocation` in the `approval_posture` section and declare the action
+  four eyes with `posture_floor?: true`; the validation verifies the invocation itself, and attaching `Governed`
+  would refuse the sole administrator's and an operator's direct changes.
+
 ### Features:
 
 - `request` accepts `rejection_details`, so a host can encrypt it with `ash_cloak` like `args` and `result`:
