@@ -53,6 +53,7 @@ defmodule AshAgent.Invocation.Changes.Request do
 
   @impl true
   def change(changeset, _opts, context) do
+    changeset = discard_details(changeset)
     args = args(changeset)
 
     with {:ok, lineage} <- lineage(changeset),
@@ -213,9 +214,25 @@ defmodule AshAgent.Invocation.Changes.Request do
     |> AshStateMachine.transition_state(:rejected)
     |> Ash.Changeset.force_change_attributes(%{
       failure_class: :rejected,
-      error_code: error_code(code, errors),
-      rejection_details: %{"errors" => Enum.map(errors, &details/1)}
+      error_code: error_code(code, errors)
     })
+    |> put_details(%{"errors" => Enum.map(errors, &details/1)})
+  end
+
+  # Only the request's own refusal writes `rejection_details`: whatever a caller passed
+  # is gone before anything is checked.
+  defp discard_details(changeset) do
+    changeset
+    |> Ash.Changeset.clear_change(:rejection_details)
+    |> Ash.Changeset.force_delete_argument(:rejection_details)
+  end
+
+  # The attribute, or, on a host that encrypts it, the argument its encryption reads:
+  # `ash_cloak` replaces an accepted attribute with an argument of the same name.
+  defp put_details(changeset, details) do
+    if Ash.Resource.Info.attribute(changeset.resource, :rejection_details),
+      do: Ash.Changeset.force_change_attribute(changeset, :rejection_details, details),
+      else: Ash.Changeset.force_set_argument(changeset, :rejection_details, details)
   end
 
   # The code names the check that refused; the per-field errors, stored as

@@ -151,7 +151,9 @@ defmodule AshAgent.Invocation do
 
   Tenancy, ownership, policies, triggers, relationships to host resources, encryption
   and the `postgres` block. `args`, `result` and `rejection_details` are marked
-  `sensitive?`; a host that encrypts content at rest seals them.
+  `sensitive?`; a host that encrypts content at rest seals them. The actions that write
+  them accept them, so a host can encrypt each with `ash_cloak`, which turns an accepted
+  attribute into an argument it encrypts.
   """
 
   use Spark.Dsl.Fragment,
@@ -244,7 +246,11 @@ defmodule AshAgent.Invocation do
 
     create :request do
       description "Record a request to run a target, checked and routed but not run."
-      accept [:target, :args, :invocation_key]
+      # `rejection_details` is accepted only so a host that encrypts it at rest (an
+      # `ash_cloak` attribute becomes an argument of the actions that accept it) has
+      # somewhere for the request's own refusal to go. A caller's value is discarded
+      # (`AshAgent.Invocation.Changes.Request`).
+      accept [:target, :args, :invocation_key, :rejection_details]
 
       argument :parent, :map
 
