@@ -24,4 +24,24 @@ defmodule AshAgent.Approval.Info do
   @spec invocation(Ash.Resource.t() | Spark.Dsl.t()) :: module() | nil
   def invocation(resource),
     do: Spark.Dsl.Extension.get_opt(resource, [:approval_posture], :invocation)
+
+  @doc """
+  The attribute of the row whose value is the tenant the `authority` is asked
+  about for a posture change: the `tenant_attribute` the host named, or the
+  resource's primary key when that is a single attribute. `nil` when the host
+  named none and the primary key is not one attribute.
+  """
+  @spec tenant_attribute(Ash.Resource.t() | Spark.Dsl.t()) :: atom() | nil
+  def tenant_attribute(resource) do
+    case Spark.Dsl.Extension.get_opt(resource, [:approval_posture], :tenant_attribute) do
+      nil ->
+        case Ash.Resource.Info.primary_key(resource) do
+          [single] -> single
+          _not_one -> nil
+        end
+
+      attribute ->
+        attribute
+    end
+  end
 end

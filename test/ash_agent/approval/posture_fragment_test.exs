@@ -5,7 +5,10 @@ defmodule AshAgent.Approval.PostureFragmentTest do
   @moduledoc false
   use AshAgent.DataCase, async: false
 
+  import Spark.Test
+
   alias AshAgent.Test.{Authority, Domain}
+  alias Spark.Error.DslError
 
   setup do
     on_exit(&Authority.restore/0)
@@ -162,6 +165,112 @@ defmodule AshAgent.Approval.PostureFragmentTest do
         )
 
       assert {lowered.approval_posture, lowered.approval_posture_ends_at} == {:small_team, nil}
+    end
+  end
+
+  describe "the tenant the Authority is asked about" do
+    test "is the row itself, so a lone administrator passes no tenant", %{
+      tenant: tenant,
+      admin: admin
+    } do
+      # Holders of this row's tenant only: a caller passing none is still
+      # answered, because the row is what is asked about.
+      Authority.set_holders(Authority.administrator_role(), [admin.id], tenant.id)
+
+      assert set!(tenant, %{approval_posture: :small_team}, actor: admin).approval_posture ==
+               :small_team
+    end
+
+    test "never the one the caller passes", %{tenant: tenant, admin: admin} do
+      other_tenant = Ash.UUID.generate()
+      outsider = %{id: Ash.UUID.generate()}
+
+      # The lone administrator of another tenant, and of this one.
+      Authority.set_holders(Authority.administrator_role(), [outsider.id], other_tenant)
+      Authority.set_holders(Authority.administrator_role(), [admin.id], tenant.id)
+
+      # Lowering this row while passing their own tenant.
+      assert {:error,
+              %Ash.Error.Invalid{
+                errors: [%AshAgent.Approval.PostureChangeRefused{reason: :lowering}]
+              }} =
+               set(tenant, %{approval_posture: :small_team},
+                 actor: outsider,
+                 tenant: other_tenant
+               )
+
+      assert Domain.get_tenant!(tenant.id).approval_posture == :standard
+
+      # And raising it, once this row's lone administrator has lowered it.
+      lowered = set!(tenant, %{approval_posture: :small_team}, actor: admin)
+
+      assert {:error,
+              %Ash.Error.Invalid{
+                errors: [%AshAgent.Approval.PostureChangeRefused{reason: :raising}]
+              }} =
+               set(lowered, %{approval_posture: :standard},
+                 actor: outsider,
+                 tenant: other_tenant
+               )
+
+      assert Domain.get_tenant!(tenant.id).approval_posture == :small_team
+    end
+
+    test "is a named attribute's value, not the primary key", %{admin: admin} do
+      tenant = Domain.create_coded_tenant!(%{code: "clinic-north"})
+
+      # Sole administrator of the tenant the row's code names. The setup's
+      # holders are two, so the row's id would not have answered this.
+      Authority.set_holders(Authority.administrator_role(), [admin.id], tenant.code)
+
+      assert Domain.set_coded_posture!(tenant, %{approval_posture: :small_team}, actor: admin).approval_posture ==
+               :small_team
+
+      assert Domain.get_coded_tenant!(tenant.id).approval_posture == :small_team
+    end
+  end
+
+  describe "the verifier" do
+    test "refuses a tenant_attribute that is not an attribute" do
+      error =
+        assert_dsl_error %DslError{path: [:approval_posture, :tenant_attribute]} do
+          defmodule Elixir.AshAgent.Approval.PostureFragmentTest.UnknownTenantAttribute do
+            use Ash.Resource, domain: nil, fragments: [AshAgent.Approval.PostureFragment]
+
+            attributes do
+              uuid_primary_key :id
+            end
+
+            approval_posture do
+              authority(AshAgent.Test.Authority)
+              execution_identity AshAgent.Test.ExecutionIdentity
+              tenant_attribute(:org_id)
+            end
+          end
+        end
+
+      assert error.message =~ "is not an attribute of this resource"
+    end
+
+    test "refuses no tenant_attribute and no single-attribute primary key" do
+      error =
+        assert_dsl_error %DslError{path: [:approval_posture, :tenant_attribute]} do
+          defmodule Elixir.AshAgent.Approval.PostureFragmentTest.CompositeKey do
+            use Ash.Resource, domain: nil, fragments: [AshAgent.Approval.PostureFragment]
+
+            attributes do
+              uuid_primary_key :id
+              attribute :site_id, :uuid, primary_key?: true, allow_nil?: false, public?: true
+            end
+
+            approval_posture do
+              authority(AshAgent.Test.Authority)
+              execution_identity AshAgent.Test.ExecutionIdentity
+            end
+          end
+        end
+
+      assert error.message =~ "no single-attribute primary key"
     end
   end
 end

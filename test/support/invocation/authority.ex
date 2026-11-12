@@ -8,6 +8,10 @@ defmodule AshAgent.Test.Authority do
   operators, kept in persistent terms the way the test host's
   `AshAgent.Test.ExecutionIdentity` keeps what it is asked. A test sets them and
   `restore/0` clears them.
+
+  Holders are keyed by the tenant they hold the role in (`set_holders/3`), as
+  the posture-change rules ask; `:any` is every tenant at once, what the
+  approval rules are content with.
   """
 
   @behaviour AshAgent.Approval.Authority
@@ -22,9 +26,10 @@ defmodule AshAgent.Test.Authority do
   def posture(_tenant), do: :persistent_term.get(@posture, {:standard, nil})
 
   @impl true
-  def holders(_tenant, role) do
-    :persistent_term.get(@roles, %{})
-    |> Map.get(role, [])
+  def holders(tenant, role) do
+    roles = :persistent_term.get(@roles, %{})
+
+    Map.get(roles, {tenant, role}, Map.get(roles, {:any, role}, []))
   end
 
   @impl true
@@ -37,9 +42,16 @@ defmodule AshAgent.Test.Authority do
   def set_posture(posture, ends_at \\ nil),
     do: :persistent_term.put(@posture, {posture, ends_at})
 
-  @doc "Makes `ids` everyone who has ever held `role`, until `restore/0`."
-  def set_holders(role, ids),
-    do: :persistent_term.put(@roles, Map.put(:persistent_term.get(@roles, %{}), role, ids))
+  @doc """
+  Makes `ids` everyone who has ever held `role` in `tenant`, until `restore/0`.
+  `tenant` defaults to `:any`, every tenant at once.
+  """
+  def set_holders(role, ids, tenant \\ :any),
+    do:
+      :persistent_term.put(
+        @roles,
+        Map.put(:persistent_term.get(@roles, %{}), {tenant, role}, ids)
+      )
 
   @doc "Makes each of `actors` a platform operator, until `restore/0`."
   def set_operators(actors), do: :persistent_term.put(@operators, actors)

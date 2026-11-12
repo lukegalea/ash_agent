@@ -39,6 +39,16 @@ defmodule AshAgent.Approval.Dsl do
         approved that way is not recognized, and only the sole administrator or an
         operator may lower the posture.
         """
+      ],
+      tenant_attribute: [
+        type: :atom,
+        doc: """
+        The attribute of the row whose value is the tenant the `authority` is
+        asked about when this row's posture changes. Optional: it defaults to
+        the resource's primary key, when that is a single attribute; a resource
+        without one must name an attribute here, and the check at compile time
+        refuses a name that is not an attribute.
+        """
       ]
     ]
   }
@@ -49,7 +59,7 @@ defmodule AshAgent.Approval.Dsl do
   with it.
 
   `authority` and `execution_identity` are required, and checked when the resource
-  compiles; `invocation` is optional.
+  compiles; `invocation` and `tenant_attribute` are optional.
 
   #{Spark.Dsl.Extension.doc_index([@section])}
 
