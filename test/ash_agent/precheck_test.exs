@@ -164,6 +164,35 @@ defmodule AshAgent.PrecheckTest do
     end
   end
 
+  describe "rejection_details" do
+    # Accepted by `request` so a host can encrypt it; written only by the refusal.
+    defp forged(actor, args) do
+      Domain.request_invocation!(
+        %{
+          target: @reviewed,
+          args: args,
+          invocation_key: key(),
+          rejection_details: %{"errors" => [%{"message" => "forged"}]}
+        },
+        actor: actor
+      )
+    end
+
+    test "a caller's value never reaches a request that is not refused", %{nurse: nurse} do
+      row = forged(nurse, %{"licence_number" => "RN-7", "clinician_name" => "Dana Reyes"})
+
+      assert row.status == :awaiting_approval
+      assert row.rejection_details == nil
+    end
+
+    test "a refused request carries the refusal's details, never the caller's", %{nurse: nurse} do
+      row = forged(nurse, %{"licence_number" => "RN-8"})
+
+      assert {row.status, row.error_code} == {:rejected, "invalid_request"}
+      assert [%{"path" => "clinician_name"}] = row.rejection_details["errors"]
+    end
+  end
+
   describe "a valid request" do
     test "still reaches awaiting_approval, with its approval bound", %{nurse: nurse} do
       row =

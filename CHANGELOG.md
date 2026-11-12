@@ -41,6 +41,10 @@ Requires Elixir 1.20 or later.
 
 ### Features:
 
+- `request` accepts `rejection_details`, so a host can encrypt it with `ash_cloak` like `args` and `result`:
+  `ash_cloak` turns an accepted attribute into an argument, and the request change writes its refusal to
+  whichever the resource has. A caller's value is discarded; only the request's own refusal writes it.
+
 - Request-time pre-check. A live request that fits its target's inputs is then checked against the action itself, as
   the principal it will execute as, through the new optional `c:AshAgent.ExecutionIdentity.precheck_actor/1` (the
   actor built from the request's row as it will be written, tenant and lineage included, before it is stored; a host
